@@ -13,9 +13,9 @@ scrape_configs:
     metrics_path: /metrics
 
   # Phase-1 backends — uncomment alongside the docker-compose entries
-  # - job_name: java-backend
-  #   static_configs: [ { targets: ['java-backend:8101'] } ]
-  #   metrics_path: /actuator/prometheus
+  - job_name: java-backend
+    static_configs: [ { targets: ['java-backend:8101'] } ]
+    metrics_path: /actuator/prometheus
   # - job_name: dotnet-backend
   #   static_configs: [ { targets: ['dotnet-backend:8102'] } ]
   #   metrics_path: /metrics
