@@ -11,6 +11,7 @@ import org.springframework.context.annotation.Configuration;
 
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.util.Objects;
 
 /**
  * Builds the {@link CosmosAsyncClient} that every repository shares.
@@ -54,7 +55,13 @@ public class CosmosConfig {
                     "Refusing to disable server certificate validation against a non-emulator endpoint: "
                         + uri + ". Unset CHRONOMART_COSMOS_ALLOW_INVALID_CERTS or point at the emulator.");
             }
-            // Both must be set together; SDK's isEmulatorHost matches by hostname.
+            // The SDK's Configs class reads these into static-final fields at class-load time.
+            // Inside Docker we always set the matching OS env vars
+            // (COSMOS_EMULATOR_HOST / COSMOS_EMULATOR_SERVER_CERTIFICATE_VALIDATION_DISABLED) so
+            // the static initializers pick them up regardless of load order — that path is
+            // reliable. The System.setProperty calls below are a best-effort fallback for purely
+            // programmatic dev runs (no env vars) and are only effective if no SDK class has
+            // been loaded yet.
             System.setProperty("COSMOS.EMULATOR_SERVER_CERTIFICATE_VALIDATION_DISABLED", "true");
             if (props.emulatorHost() != null && !props.emulatorHost().isBlank()) {
                 System.setProperty("COSMOS.EMULATOR_HOST", props.emulatorHost());
@@ -63,11 +70,13 @@ public class CosmosConfig {
                 uri, props.emulatorHost());
         }
 
+        String chronomartVersion = Objects.requireNonNullElse(
+            getClass().getPackage().getImplementationVersion(), "dev");
         CosmosClientBuilder builder = new CosmosClientBuilder()
             .endpoint(props.endpoint())
             .key(props.key())
             .consistencyLevel(ConsistencyLevel.SESSION)
-            .userAgentSuffix("chronomart-java/" + getClass().getPackage().getImplementationVersion())
+            .userAgentSuffix("chronomart-java/" + chronomartVersion)
             .contentResponseOnWriteEnabled(true);
 
         if (looksLikeEmulator) {
@@ -97,8 +106,9 @@ public class CosmosConfig {
     private static boolean isEmulatorLike(URI uri, String configuredEmulatorHost) {
         String host = uri.getHost();
         if (host == null) return false;
+        // URI.getHost() returns the bare form (no brackets) for IPv6 literals.
         if ("localhost".equalsIgnoreCase(host) || "127.0.0.1".equals(host)
-            || "[::1]".equals(host) || "::1".equals(host)) {
+            || "::1".equals(host)) {
             return true;
         }
         return configuredEmulatorHost != null && configuredEmulatorHost.equalsIgnoreCase(host);

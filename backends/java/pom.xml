@@ -23,7 +23,7 @@
         <maven.compiler.source>21</maven.compiler.source>
         <maven.compiler.target>21</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-        <azure.cosmos.version>4.71.0</azure.cosmos.version>
+        <azure.cosmos.version>4.80.0</azure.cosmos.version>
     </properties>
 
     <dependencies>

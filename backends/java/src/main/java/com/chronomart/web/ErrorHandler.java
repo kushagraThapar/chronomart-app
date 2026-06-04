@@ -2,6 +2,8 @@ package com.chronomart.web;
 
 import com.azure.cosmos.CosmosException;
 import com.chronomart.web.dto.ErrorResponse;
+import jakarta.validation.ConstraintViolation;
+import jakarta.validation.ConstraintViolationException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
@@ -11,6 +13,7 @@ import org.springframework.web.bind.annotation.ExceptionHandler;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 /**
  * Centralized error mapping so every backend returns the contract's
@@ -47,6 +50,40 @@ public class ErrorHandler {
     public ResponseEntity<ErrorResponse> handleBadRequest(IllegalArgumentException ex) {
         return ResponseEntity.status(HttpStatus.BAD_REQUEST)
             .body(ErrorResponse.of("BadRequest", ex.getMessage(), 400));
+    }
+
+    @ExceptionHandler(ConstraintViolationException.class)
+    public ResponseEntity<ErrorResponse> handleValidation(ConstraintViolationException ex) {
+        String message = ex.getConstraintViolations().stream()
+            .map(v -> v.getPropertyPath() + " " + v.getMessage())
+            .collect(Collectors.joining("; "));
+        if (message.isEmpty()) {
+            message = "Request validation failed";
+        }
+        Map<String, Object> details = new LinkedHashMap<>();
+        details.put("violations", ex.getConstraintViolations().stream()
+            .map(this::toViolationEntry)
+            .toList());
+        ErrorResponse.Error err = new ErrorResponse.Error(
+            "ValidationFailed",
+            message,
+            HttpStatus.BAD_REQUEST.value(),
+            null,
+            null,
+            "java",
+            details
+        );
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(new ErrorResponse(err));
+    }
+
+    private Map<String, Object> toViolationEntry(ConstraintViolation<?> v) {
+        Map<String, Object> entry = new LinkedHashMap<>();
+        entry.put("path", v.getPropertyPath().toString());
+        entry.put("message", v.getMessage());
+        if (v.getInvalidValue() != null) {
+            entry.put("invalidValue", v.getInvalidValue().toString());
+        }
+        return entry;
     }
 
     @ExceptionHandler(Throwable.class)

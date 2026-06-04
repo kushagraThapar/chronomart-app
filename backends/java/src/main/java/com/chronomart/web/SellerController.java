@@ -2,7 +2,10 @@ package com.chronomart.web;
 
 import com.chronomart.domain.Seller;
 import com.chronomart.repo.SellerRepo;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
 import org.springframework.http.ResponseEntity;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -20,6 +23,7 @@ import reactor.core.publisher.Mono;
  */
 @RestController
 @RequestMapping("/api/v1/sellers")
+@Validated
 public class SellerController {
 
     private final SellerRepo sellers;
@@ -29,8 +33,8 @@ public class SellerController {
     }
 
     @GetMapping
-    public Flux<Seller> list(@RequestParam(defaultValue = "100") int limit) {
-        return sellers.list(Math.min(limit, 1000));
+    public Flux<Seller> list(@RequestParam(defaultValue = "100") @Min(1) @Max(1000) int limit) {
+        return sellers.list(limit);
     }
 
     @GetMapping("/{id}")

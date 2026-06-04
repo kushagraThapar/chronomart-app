@@ -10,6 +10,7 @@ import org.springframework.web.bind.annotation.RestController;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 /**
  * Cross-cutting metadata endpoints under {@code /api/v1/_meta/*}.
@@ -58,12 +59,13 @@ public class MetaController {
             "maxQueryPageSize", 1000
         );
 
-        String cosmosVersion = com.azure.cosmos.CosmosAsyncClient.class.getPackage()
-            .getImplementationVersion();
+        String cosmosVersion = Objects.requireNonNullElse(
+            com.azure.cosmos.CosmosAsyncClient.class.getPackage().getImplementationVersion(),
+            "unknown");
 
         return new CapabilityManifest(
             "java",
-            "chronomart-java/" + buildVersion + " azure-cosmos/" + (cosmosVersion != null ? cosmosVersion : "unknown"),
+            "chronomart-java/" + buildVersion + " azure-cosmos/" + cosmosVersion,
             List.of("v1"),
             features,
             limits,

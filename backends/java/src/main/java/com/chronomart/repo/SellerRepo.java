@@ -36,8 +36,10 @@ public class SellerRepo {
             "SELECT TOP @n * FROM c ORDER BY c.id",
             List.of(new SqlParameter("@n", limit)));
         CosmosQueryRequestOptions opts = new CosmosQueryRequestOptions();
+        // concatMap (not flatMap) preserves the ORDER BY across pages — flatMap allows
+        // pages to interleave even though Flux.fromIterable is synchronous today.
         return container.queryItems(spec, opts, Seller.class)
             .byPage()
-            .flatMap(page -> Flux.fromIterable(page.getResults()));
+            .concatMap(page -> Flux.fromIterable(page.getResults()));
     }
 }

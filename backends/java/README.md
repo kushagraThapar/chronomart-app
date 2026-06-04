@@ -59,7 +59,7 @@ case-insensitively to the `chronomart.cosmos.*` prefix).
 | `COSMOS_ALLOW_INVALID_CERTS`           | `false`                             | Set `true` against the emulator |
 | `COSMOS_EMULATOR_HOST`                 | _empty_                             | Set to `cosmos-emulator` inside Compose so the SDK's `isEmulatorHost` matches |
 | `CHRONOMART_INIT_ENABLED`              | `true`                              | Provisions containers + repairs Cart TTL on boot |
-| `CHRONOMART_INIT_VECTOR`               | `true`                              | Skip vector container if emulator doesn't support it |
+| `CHRONOMART_INIT_VECTOR`               | `false`                             | Off by default until vNext emulator DiskANN support is verified in PR6 |
 
 > The two env vars `COSMOS_ALLOW_INVALID_CERTS` + `COSMOS_EMULATOR_HOST` must be set
 > **together** when running inside Docker against the emulator on a non-`localhost`
