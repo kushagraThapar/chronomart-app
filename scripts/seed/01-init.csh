@@ -7,6 +7,6 @@ mkcon Inventory    /sellerId
 mkcon Customers    /id
 mkcon Reviews      /productId
 mkcon Cart         /customerId
-mkcon ProductsHpk  /sellerId,/categoryId
-mkcon Orders       /customerId,/yearMonth
+mkcon ProductsHpk  /sellerId,/categoryId,/id
+mkcon Orders       /customerId,/yearMonth,/id
 mkcon ChangeFeedLease /id

@@ -7,7 +7,11 @@ import java.time.Instant;
 import java.util.List;
 
 /**
- * Customer order. PK = hierarchical (/customerId, /yearMonth). Mirrors
+ * Customer order.
+ *
+ * <p>Partition key is the 3-level tuple {@code (/customerId, /yearMonth, /id)}. The leaf
+ * {@code /id} makes a full-tuple point read single-partition; queries scoped to a customer
+ * (or a customer-month) still get hierarchical prefix routing. Mirrors
  * {@code contracts/domain.md#Order}.
  */
 @JsonInclude(Include.NON_NULL)

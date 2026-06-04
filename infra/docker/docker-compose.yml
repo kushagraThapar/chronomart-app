@@ -124,13 +124,17 @@ services:
       COSMOS_DATABASE: "ChronoMart"
       COSMOS_ALLOW_INVALID_CERTS: "true"
       COSMOS_EMULATOR_HOST: "cosmos-emulator"
-      CHRONOMART_INIT_ENABLED: "true"
+      CHRONOMART_CONTAINER_INIT_ENABLED: "true"
       # Set false until vNext emulator support for DiskANN vectors is confirmed.
-      CHRONOMART_INIT_VECTOR: "false"
+      CHRONOMART_CONTAINER_INIT_VECTOR: "false"
+      # Log file inside the container; bind-mounted out to the host below for tailing.
+      CHRONOMART_LOG_FILE: "/app/logs/chronomart-java.log"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4317"
       OTEL_SERVICE_NAME: "chronomart-java"
       JAVA_OPTS: "-XX:MaxRAMPercentage=75.0 -XX:+UseG1GC -Dlogging.level.com.azure.cosmos=INFO"
     ports: ["8101:8101"]
+    volumes:
+      - ../../logs/java:/app/logs
     networks: [chronomart]
     depends_on:
       cosmos-emulator: { condition: service_healthy }

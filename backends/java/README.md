@@ -1,6 +1,6 @@
 # ChronoMart — Java Backend
 
-Spring Boot 3.4 + `azure-cosmos` 4.71.0, talking to the Cosmos DB vNext emulator (or any
+Spring Boot 4.0 + `azure-cosmos` 4.80.0, talking to the Cosmos DB vNext emulator (or any
 real account in later phases).
 
 This is one of N language backends implementing the same OpenAPI contract in

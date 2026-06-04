@@ -64,8 +64,8 @@ public class ContainerInitializer implements ApplicationRunner {
 
     @Override
     public void run(ApplicationArguments args) {
-        if (!props.init().enabled()) {
-            log.info("Container init disabled (chronomart.cosmos.init.enabled=false), skipping");
+        if (!props.containerInit().enabled()) {
+            log.info("Container init disabled (chronomart.cosmos.container-init.enabled=false), skipping");
             return;
         }
         log.info("Provisioning ChronoMart schema database={}", props.database());
@@ -85,15 +85,18 @@ public class ContainerInitializer implements ApplicationRunner {
         // Cart — single PK + 7-day default TTL (NOT settable from cosmoshell)
         ensureCartContainer(props.containers().cart());
 
-        // Hierarchical-PK containers — present from seed.
-        ensureHpk(props.containers().productsHpk(), List.of("/sellerId", "/categoryId"));
-        ensureHpk(props.containers().orders(), List.of("/customerId", "/yearMonth"));
+        // Hierarchical-PK containers — present from seed. The leaf level is always /id so
+        // a fully-qualified point read routes to a single physical partition; partial-prefix
+        // queries (e.g. by sellerId only) still benefit from hierarchical prefix routing.
+        // See contracts/domain.md → Containers table.
+        ensureHpk(props.containers().productsHpk(), List.of("/sellerId", "/categoryId", "/id"));
+        ensureHpk(props.containers().orders(), List.of("/customerId", "/yearMonth", "/id"));
 
         // Vector container — only place vector policy can be set; gated by feature flag.
-        if (props.init().createVectorContainer()) {
+        if (props.containerInit().createVectorContainer()) {
             ensureVectorContainer(props.containers().productVectors());
         } else {
-            log.info("  skipping {} (chronomart.cosmos.init.create-vector-container=false)",
+            log.info("  skipping {} (chronomart.cosmos.container-init.create-vector-container=false)",
                 props.containers().productVectors());
         }
 
