@@ -1,0 +1,31 @@
+{
+  "name": "@chronomart/gateway",
+  "version": "0.1.0",
+  "private": true,
+  "description": "ChronoMart gateway — routes /api/v1/* to a Cosmos DB SDK backend chosen by the X-Cosmos-SDK header.",
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/server.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node --enable-source-maps dist/server.js",
+    "dev": "tsx watch src/server.ts",
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test dist/test/**/*.test.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@fastify/http-proxy": "^10.0.0",
+    "fastify": "^5.1.0",
+    "fastify-metrics": "^12.1.0",
+    "pino-pretty": "^11.2.2",
+    "undici": "^6.21.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}

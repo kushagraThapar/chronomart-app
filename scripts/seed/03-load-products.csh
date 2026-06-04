@@ -1,0 +1,23 @@
+
+# seller-001: Quartz & Co. (Switzerland) — dive watches
+mkitem --database=ChronoMart --container=Products '{"id":"prod-001","sellerId":"seller-001","categoryId":"dive","name":"Quartz Diver 200","brand":"Quartz & Co.","model":"QD-200","priceUsd":449.00,"currency":"USD","attributes":{"movement":"automatic","diameterMm":42,"waterResistanceM":200,"caseMaterial":"316L"},"tags":["dive","automatic","swiss"]}'
+mkitem --database=ChronoMart --container=Products '{"id":"prod-002","sellerId":"seller-001","categoryId":"dive","name":"Quartz Diver 500","brand":"Quartz & Co.","model":"QD-500","priceUsd":899.00,"currency":"USD","attributes":{"movement":"automatic","diameterMm":44,"waterResistanceM":500,"caseMaterial":"titanium"},"tags":["dive","automatic","swiss","titanium"]}'
+mkitem --database=ChronoMart --container=Products '{"id":"prod-003","sellerId":"seller-001","categoryId":"dress","name":"Quartz Classique","brand":"Quartz & Co.","model":"QC-01","priceUsd":1199.00,"currency":"USD","attributes":{"movement":"automatic","diameterMm":39,"caseMaterial":"steel"},"tags":["dress","automatic","swiss"]}'
+
+# seller-002: Marina Watchworks (Italy) — sport / chronograph
+mkitem --database=ChronoMart --container=Products '{"id":"prod-101","sellerId":"seller-002","categoryId":"chronograph","name":"Marina Regata","brand":"Marina","model":"MR-22","priceUsd":2199.00,"currency":"USD","attributes":{"movement":"automatic","diameterMm":43,"caseMaterial":"steel"},"tags":["chronograph","racing","italian"]}'
+mkitem --database=ChronoMart --container=Products '{"id":"prod-102","sellerId":"seller-002","categoryId":"sport","name":"Marina Costiera","brand":"Marina","model":"MC-44","priceUsd":1499.00,"currency":"USD","attributes":{"movement":"automatic","diameterMm":44,"waterResistanceM":300},"tags":["sport","italian"]}'
+mkitem --database=ChronoMart --container=Products '{"id":"prod-103","sellerId":"seller-002","categoryId":"chronograph","name":"Marina GMT","brand":"Marina","model":"MG-01","priceUsd":1899.00,"currency":"USD","attributes":{"movement":"automatic","diameterMm":42,"complications":["gmt"]},"tags":["gmt","travel","italian"]}'
+
+# seller-003: Hauteville Heritage (France) — dress
+mkitem --database=ChronoMart --container=Products '{"id":"prod-201","sellerId":"seller-003","categoryId":"dress","name":"Hauteville Lumiere","brand":"Hauteville","model":"HL-01","priceUsd":3299.00,"currency":"USD","attributes":{"movement":"manual","diameterMm":38,"caseMaterial":"rose gold"},"tags":["dress","heritage","french","rose-gold"]}'
+mkitem --database=ChronoMart --container=Products '{"id":"prod-202","sellerId":"seller-003","categoryId":"dress","name":"Hauteville Reverso","brand":"Hauteville","model":"HR-01","priceUsd":4499.00,"currency":"USD","attributes":{"movement":"manual","diameterMm":36,"caseMaterial":"steel"},"tags":["dress","reversible","french","heritage"]}'
+
+# seller-004: Pioneer Pacific (Japan) — field / tool
+mkitem --database=ChronoMart --container=Products '{"id":"prod-301","sellerId":"seller-004","categoryId":"field","name":"Pioneer Alpinist","brand":"Pioneer","model":"PA-200","priceUsd":499.00,"currency":"USD","attributes":{"movement":"automatic","diameterMm":40,"complications":["compass"]},"tags":["field","japanese","tool"]}'
+mkitem --database=ChronoMart --container=Products '{"id":"prod-302","sellerId":"seller-004","categoryId":"field","name":"Pioneer Solar Field","brand":"Pioneer","model":"PS-100","priceUsd":279.00,"currency":"USD","attributes":{"movement":"solar","diameterMm":42},"tags":["field","solar","japanese","value"]}'
+mkitem --database=ChronoMart --container=Products '{"id":"prod-303","sellerId":"seller-004","categoryId":"dive","name":"Pioneer Pelagic","brand":"Pioneer","model":"PP-300","priceUsd":699.00,"currency":"USD","attributes":{"movement":"automatic","diameterMm":44,"waterResistanceM":300},"tags":["dive","japanese","automatic"]}'
+
+# seller-005: Cordillera Crafts (Peru) — handmade dress
+mkitem --database=ChronoMart --container=Products '{"id":"prod-401","sellerId":"seller-005","categoryId":"dress","name":"Cordillera Andina","brand":"Cordillera","model":"CA-01","priceUsd":899.00,"currency":"USD","attributes":{"movement":"automatic","diameterMm":40,"caseMaterial":"bronze"},"tags":["handmade","artisan","bronze","dress"]}'
+mkitem --database=ChronoMart --container=Products '{"id":"prod-402","sellerId":"seller-005","categoryId":"sport","name":"Cordillera Pampa","brand":"Cordillera","model":"CP-44","priceUsd":1099.00,"currency":"USD","attributes":{"movement":"automatic","diameterMm":42,"caseMaterial":"steel"},"tags":["sport","handmade","artisan"]}'

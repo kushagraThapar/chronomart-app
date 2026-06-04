@@ -1,0 +1,21 @@
+extends:
+  - recommended
+
+rules:
+  # We don't want a 4xx on every healthz / capabilities call
+  operation-4xx-response: off
+  # License URL and contact block are optional for an internal-style spec
+  info-license-url: off
+  info-contact: off
+  # Server descriptions and tag descriptions are already covered in README
+  no-server-trailing-slash: off
+  # Auth is intentionally not defined yet — Phase 0 runs against the local emulator
+  # with the well-known key. Real auth (AAD Workload Identity) lands with Phase 6 (AKS).
+  security-defined: off
+  # The components catalogue is shared across SDKs — some shapes are reserved for
+  # implementations not yet wired up.
+  no-unused-components: off
+
+apis:
+  chronomart@v1:
+    root: contracts/openapi.yaml

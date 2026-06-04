@@ -1,0 +1,1071 @@
+openapi: 3.1.0
+info:
+  title: ChronoMart API
+  version: 1.0.0
+  description: |
+    REST contract that every per-language Cosmos DB SDK backend in `/backends/` implements
+    identically. See `domain.md` for the entity model and `capabilities.md` for the feature
+    flag catalogue. All routes are prefixed `/api/v1/`.
+  license:
+    name: MIT
+servers:
+  - url: http://localhost:8000/api/v1
+    description: Local gateway (docker-compose)
+  - url: http://localhost:8101/api/v1
+    description: Java backend (direct, bypasses gateway)
+  - url: http://localhost:8102/api/v1
+    description: .NET backend (direct)
+  - url: http://localhost:8103/api/v1
+    description: Python backend (direct)
+
+tags:
+  - name: meta
+    description: Capability, diagnostics, cache and feed-range introspection.
+  - name: sellers
+  - name: products
+  - name: products-hpk
+    description: Same products under hierarchical partition keys.
+  - name: inventory
+  - name: customers
+  - name: orders
+  - name: reviews
+  - name: cart
+  - name: queries
+  - name: bulk
+  - name: batch
+  - name: changefeed
+  - name: patch
+  - name: vector
+  - name: workloads
+
+paths:
+  /healthz:
+    get:
+      operationId: healthz
+      tags: [meta]
+      summary: Liveness probe
+      responses:
+        "200":
+          description: OK
+
+  /_meta/capabilities:
+    get:
+      operationId: getCapabilities
+      tags: [meta]
+      summary: Return capability manifest for the serving backend
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CapabilityManifest' }
+
+  /_meta/diagnostics:
+    get:
+      operationId: getDiagnostics
+      tags: [meta]
+      summary: Return the last N CosmosDiagnostics blobs captured by the backend
+      parameters:
+        - in: query
+          name: last
+          schema: { type: integer, minimum: 1, maximum: 1000, default: 50 }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/DiagnosticsEntry' }
+
+  /_meta/caches:
+    get:
+      operationId: getCaches
+      tags: [meta]
+      summary: Inspect SDK PK-range / container caches
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CacheSnapshot' }
+        "501":
+          $ref: '#/components/responses/NotImplemented'
+
+  /_meta/feed-ranges:
+    get:
+      operationId: getFeedRanges
+      tags: [meta]
+      summary: List feed ranges for a container
+      parameters:
+        - in: query
+          name: container
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/FeedRange' }
+
+  # ─── Resource CRUD (representative; see component schemas for shapes) ────────
+
+  /sellers:
+    get:
+      operationId: listSellers
+      tags: [sellers]
+      summary: List sellers (paged, cross-partition)
+      parameters:
+        - $ref: '#/components/parameters/PageSize'
+        - $ref: '#/components/parameters/Continuation'
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SellerPage' }
+    post:
+      operationId: createSeller
+      tags: [sellers]
+      summary: Create a seller
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Seller' }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Seller' }
+        "409": { $ref: '#/components/responses/Conflict' }
+
+  /sellers/{id}:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema: { type: string }
+    get:
+      operationId: getSeller
+      tags: [sellers]
+      summary: Point-read seller
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Seller' }
+        "404": { $ref: '#/components/responses/NotFound' }
+    put:
+      operationId: upsertSeller
+      tags: [sellers]
+      summary: Upsert seller
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Seller' }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Seller' }
+    delete:
+      operationId: deleteSeller
+      tags: [sellers]
+      summary: Delete seller
+      responses:
+        "204": { description: No Content }
+
+  /products:
+    get:
+      operationId: listProducts
+      tags: [products]
+      summary: List products (paged; filter by sellerId for single-partition)
+      parameters:
+        - in: query
+          name: sellerId
+          schema: { type: string }
+        - $ref: '#/components/parameters/PageSize'
+        - $ref: '#/components/parameters/Continuation'
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProductPage' }
+    post:
+      operationId: createProduct
+      tags: [products]
+      summary: Create a product
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Product' }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Product' }
+
+  /products/{sellerId}/{id}:
+    parameters:
+      - in: path
+        name: sellerId
+        required: true
+        schema: { type: string }
+      - in: path
+        name: id
+        required: true
+        schema: { type: string }
+    get:
+      operationId: getProduct
+      tags: [products]
+      summary: Point-read a product (id + partition key)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Product' }
+        "404": { $ref: '#/components/responses/NotFound' }
+    put:
+      operationId: upsertProduct
+      tags: [products]
+      summary: Upsert a product
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Product' }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Product' }
+    delete:
+      operationId: deleteProduct
+      tags: [products]
+      summary: Delete a product
+      responses:
+        "204": { description: No Content }
+
+  /products-hpk/{sellerId}/{categoryId}/{id}:
+    parameters:
+      - in: path
+        name: sellerId
+        required: true
+        schema: { type: string }
+      - in: path
+        name: categoryId
+        required: true
+        schema: { type: string }
+      - in: path
+        name: id
+        required: true
+        schema: { type: string }
+    get:
+      operationId: getProductHpk
+      tags: [products-hpk]
+      summary: Point-read product in hierarchical-PK container
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Product' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "501": { $ref: '#/components/responses/NotImplemented' }
+    put:
+      operationId: upsertProductHpk
+      tags: [products-hpk]
+      summary: Upsert product in hierarchical-PK container
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Product' }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Product' }
+
+  /customers:
+    post:
+      operationId: createCustomer
+      tags: [customers]
+      summary: Create a customer
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/Customer' } } }
+      responses:
+        "201":
+          description: Created
+          content: { application/json: { schema: { $ref: '#/components/schemas/Customer' } } }
+
+  /customers/{id}:
+    parameters:
+      - { in: path, name: id, required: true, schema: { type: string } }
+    get:
+      operationId: getCustomer
+      tags: [customers]
+      summary: Point-read customer
+      responses:
+        "200":
+          description: OK
+          content: { application/json: { schema: { $ref: '#/components/schemas/Customer' } } }
+        "404": { $ref: '#/components/responses/NotFound' }
+
+  /orders/{customerId}/{yearMonth}/{id}:
+    parameters:
+      - { in: path, name: customerId, required: true, schema: { type: string } }
+      - { in: path, name: yearMonth, required: true, schema: { type: string, pattern: '^[0-9]{4}-[0-9]{2}$' } }
+      - { in: path, name: id, required: true, schema: { type: string } }
+    get:
+      operationId: getOrder
+      tags: [orders]
+      summary: Point-read order (hierarchical PK)
+      responses:
+        "200":
+          description: OK
+          content: { application/json: { schema: { $ref: '#/components/schemas/Order' } } }
+        "404": { $ref: '#/components/responses/NotFound' }
+    put:
+      operationId: upsertOrder
+      tags: [orders]
+      summary: Upsert order (hierarchical PK)
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/Order' } } }
+      responses:
+        "200":
+          description: OK
+          content: { application/json: { schema: { $ref: '#/components/schemas/Order' } } }
+
+  /reviews/{productId}/{id}:
+    parameters:
+      - { in: path, name: productId, required: true, schema: { type: string } }
+      - { in: path, name: id,        required: true, schema: { type: string } }
+    get:
+      operationId: getReview
+      tags: [reviews]
+      summary: Point-read review
+      responses:
+        "200":
+          description: OK
+          content: { application/json: { schema: { $ref: '#/components/schemas/Review' } } }
+        "404": { $ref: '#/components/responses/NotFound' }
+    put:
+      operationId: upsertReview
+      tags: [reviews]
+      summary: Upsert review
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/Review' } } }
+      responses:
+        "200":
+          description: OK
+          content: { application/json: { schema: { $ref: '#/components/schemas/Review' } } }
+
+  /cart/{customerId}:
+    parameters:
+      - { in: path, name: customerId, required: true, schema: { type: string } }
+    get:
+      operationId: getCart
+      tags: [cart]
+      summary: Get a customer's cart
+      responses:
+        "200":
+          description: OK
+          content: { application/json: { schema: { $ref: '#/components/schemas/Cart' } } }
+        "404": { $ref: '#/components/responses/NotFound' }
+    put:
+      operationId: upsertCart
+      tags: [cart]
+      summary: Upsert a customer's cart
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/Cart' } } }
+      responses:
+        "200":
+          description: OK
+          content: { application/json: { schema: { $ref: '#/components/schemas/Cart' } } }
+
+  /inventory/{sellerId}/{id}:
+    parameters:
+      - { in: path, name: sellerId, required: true, schema: { type: string } }
+      - { in: path, name: id, required: true, schema: { type: string } }
+    get:
+      operationId: getInventory
+      tags: [inventory]
+      summary: Point-read inventory
+      responses:
+        "200":
+          description: OK
+          content: { application/json: { schema: { $ref: '#/components/schemas/Inventory' } } }
+        "404": { $ref: '#/components/responses/NotFound' }
+    put:
+      operationId: upsertInventory
+      tags: [inventory]
+      summary: Upsert inventory
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/Inventory' } } }
+      responses:
+        "200":
+          description: OK
+          content: { application/json: { schema: { $ref: '#/components/schemas/Inventory' } } }
+
+  # ─── Cross-cutting capability endpoints ────────────────────────────────────────
+
+  /queries/run:
+    post:
+      operationId: runQuery
+      tags: [queries]
+      summary: Run a parameterized SQL query against a container
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/QueryRequest' }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/QueryResponse' }
+        "400": { $ref: '#/components/responses/BadRequest' }
+
+  /bulk:
+    post:
+      operationId: bulk
+      tags: [bulk]
+      summary: Bulk write/upsert (per-item statuses returned)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BulkRequest' }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BulkResponse' }
+        "501": { $ref: '#/components/responses/NotImplemented' }
+
+  /batch:
+    post:
+      operationId: batch
+      tags: [batch]
+      summary: Transactional batch within a single partition key
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BatchRequest' }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BatchResponse' }
+        "409": { $ref: '#/components/responses/Conflict' }
+        "501": { $ref: '#/components/responses/NotImplemented' }
+
+  /changefeed/pull:
+    post:
+      operationId: changeFeedPull
+      tags: [changefeed]
+      summary: Pull-mode change feed iteration
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ChangeFeedPullRequest' }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ChangeFeedPullResponse' }
+        "501": { $ref: '#/components/responses/NotImplemented' }
+
+  /patch:
+    post:
+      operationId: patch
+      tags: [patch]
+      summary: JSON-Patch-style partial update
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PatchRequest' }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "501": { $ref: '#/components/responses/NotImplemented' }
+
+  /vector/search:
+    post:
+      operationId: vectorSearch
+      tags: [vector]
+      summary: Semantic search using VectorDistance()
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/VectorSearchRequest' }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/VectorSearchResponse' }
+        "501": { $ref: '#/components/responses/NotImplemented' }
+
+  /workloads:
+    get:
+      operationId: listWorkloads
+      tags: [workloads]
+      summary: List workloads the backend can run
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { type: string }
+
+  /workloads/{id}/run:
+    parameters:
+      - { in: path, name: id, required: true, schema: { type: string } }
+    post:
+      operationId: runWorkload
+      tags: [workloads]
+      summary: Run a composable workload
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WorkloadRunRequest' }
+      responses:
+        "202":
+          description: Accepted
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkloadRunHandle' }
+        "404": { $ref: '#/components/responses/NotFound' }
+        "501": { $ref: '#/components/responses/NotImplemented' }
+
+  /workloads/{id}/status/{runId}:
+    parameters:
+      - { in: path, name: id,    required: true, schema: { type: string } }
+      - { in: path, name: runId, required: true, schema: { type: string } }
+    get:
+      operationId: getWorkloadRunStatus
+      tags: [workloads]
+      summary: Workload run status and per-step metrics
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkloadRunStatus' }
+        "404": { $ref: '#/components/responses/NotFound' }
+
+components:
+  parameters:
+    PageSize:
+      in: query
+      name: pageSize
+      schema: { type: integer, minimum: 1, maximum: 1000, default: 100 }
+    Continuation:
+      in: query
+      name: continuation
+      schema: { type: string }
+    XCosmosSDK:
+      in: header
+      name: X-Cosmos-SDK
+      required: false
+      schema:
+        type: string
+        enum: [java, dotnet, python, rust, go]
+
+  responses:
+    NotFound:
+      description: Not Found
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    Conflict:
+      description: Conflict
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    BadRequest:
+      description: Bad Request
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    NotImplemented:
+      description: The selected SDK backend does not support this operation
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+
+  schemas:
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: { type: string }
+            message: { type: string }
+            sdk: { type: string }
+            sdkVersion: { type: string }
+            cosmosStatusCode: { type: integer }
+            cosmosSubStatusCode: { type: integer }
+            activityId: { type: string }
+            traceId: { type: string }
+
+    CapabilityManifest:
+      type: object
+      required: [sdk, sdkVersion, apiVersions, features]
+      properties:
+        sdk: { type: string, enum: [java, dotnet, python, rust, go] }
+        sdkVersion: { type: string }
+        apiVersions:
+          type: array
+          items: { type: string }
+        features:
+          type: object
+          additionalProperties: true
+        limits:
+          type: object
+          additionalProperties: { type: integer }
+
+    DiagnosticsEntry:
+      type: object
+      properties:
+        timestamp: { type: string, format: date-time }
+        operation: { type: string }
+        durationMs: { type: number }
+        requestCharge: { type: number }
+        statusCode: { type: integer }
+        activityId: { type: string }
+        diagnostics:
+          type: object
+          additionalProperties: true
+
+    CacheSnapshot:
+      type: object
+      properties:
+        pkRangeCache:
+          type: array
+          items:
+            type: object
+            properties:
+              containerRid: { type: string }
+              ranges:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id: { type: string }
+                    minInclusive: { type: string }
+                    maxExclusive: { type: string }
+        containerCache:
+          type: array
+          items:
+            type: object
+            properties:
+              database: { type: string }
+              container: { type: string }
+              rid: { type: string }
+              loadedAt: { type: string, format: date-time }
+
+    FeedRange:
+      type: object
+      properties:
+        id: { type: string }
+        minInclusive: { type: string }
+        maxExclusive: { type: string }
+        opaque: { type: string, description: 'SDK-provided continuation/opaque token for the range' }
+
+    # ─── Resource shapes (skeleton — full JSON Schema in domain.md) ─────────
+
+    Seller:
+      type: object
+      required: [id, name, country]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        country: { type: string }
+        rating: { type: number }
+        joinedAt: { type: string, format: date-time }
+
+    SellerPage:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/Seller' }
+        continuation: { type: ['string', 'null'] }
+
+    Product:
+      type: object
+      required: [id, sellerId, name, priceUsd]
+      properties:
+        id: { type: string }
+        sellerId: { type: string }
+        categoryId: { type: string }
+        name: { type: string }
+        brand: { type: string }
+        model: { type: string }
+        priceUsd: { type: number }
+        currency: { type: string }
+        attributes:
+          type: object
+          additionalProperties: true
+        tags:
+          type: array
+          items: { type: string }
+        images:
+          type: array
+          items: { type: string }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    ProductPage:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/Product' }
+        continuation: { type: ['string', 'null'] }
+
+    Customer:
+      type: object
+      required: [id, name]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        email: { type: string }
+        country: { type: string }
+        tier: { type: string }
+        createdAt: { type: string, format: date-time }
+
+    OrderItem:
+      type: object
+      required: [productId, qty, unitPriceUsd]
+      properties:
+        productId: { type: string }
+        sellerId: { type: string }
+        qty: { type: integer }
+        unitPriceUsd: { type: number }
+
+    Order:
+      type: object
+      required: [id, customerId, yearMonth, items, totalUsd]
+      properties:
+        id: { type: string }
+        customerId: { type: string }
+        yearMonth: { type: string, pattern: '^[0-9]{4}-[0-9]{2}$' }
+        status: { type: string, enum: [pending, paid, shipped, delivered, cancelled] }
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/OrderItem' }
+        totalUsd: { type: number }
+        createdAt: { type: string, format: date-time }
+        shippedAt: { type: ['string', 'null'], format: date-time }
+
+    Review:
+      type: object
+      required: [id, productId, customerId, rating]
+      properties:
+        id: { type: string }
+        productId: { type: string }
+        customerId: { type: string }
+        rating: { type: integer, minimum: 1, maximum: 5 }
+        title: { type: string }
+        body: { type: string }
+        createdAt: { type: string, format: date-time }
+
+    CartItem:
+      type: object
+      required: [productId, qty]
+      properties:
+        productId: { type: string }
+        qty: { type: integer }
+        addedAt: { type: string, format: date-time }
+
+    Cart:
+      type: object
+      required: [id, customerId, items]
+      properties:
+        id: { type: string }
+        customerId: { type: string }
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/CartItem' }
+        updatedAt: { type: string, format: date-time }
+        ttl: { type: integer, description: 'Override container TTL; -1 disables TTL for this doc.' }
+
+    Inventory:
+      type: object
+      required: [id, sellerId, productId, available]
+      properties:
+        id: { type: string }
+        sellerId: { type: string }
+        productId: { type: string }
+        available: { type: integer }
+        reserved: { type: integer }
+        updatedAt: { type: string, format: date-time }
+
+    # ─── Cross-cutting payloads ───────────────────────────────────────────────
+
+    QueryRequest:
+      type: object
+      required: [container, query]
+      properties:
+        container: { type: string }
+        query: { type: string }
+        parameters:
+          type: array
+          items:
+            type: object
+            properties:
+              name: { type: string }
+              value: {}
+        partitionKey:
+          oneOf:
+            - { type: string }
+            - { type: array, items: { type: string }, description: 'Hierarchical PK' }
+        pageSize: { type: integer, minimum: 1, maximum: 1000, default: 100 }
+        continuation: { type: string }
+        enableCrossPartition: { type: boolean, default: false }
+        maxConcurrency: { type: integer, default: -1 }
+
+    QueryResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { type: object, additionalProperties: true }
+        continuation: { type: ['string', 'null'] }
+        requestCharge: { type: number }
+        diagnostics:
+          type: object
+          additionalProperties: true
+
+    BulkOperation:
+      type: object
+      required: [op, partitionKey, document]
+      properties:
+        op: { type: string, enum: [create, upsert, replace, delete] }
+        partitionKey:
+          oneOf:
+            - { type: string }
+            - { type: array, items: { type: string } }
+        document: { type: object, additionalProperties: true }
+        id: { type: string, description: 'For delete/replace, when not embedded in document.' }
+
+    BulkRequest:
+      type: object
+      required: [container, operations]
+      properties:
+        container: { type: string }
+        operations:
+          type: array
+          items: { $ref: '#/components/schemas/BulkOperation' }
+        maxConcurrency: { type: integer }
+
+    BulkResultItem:
+      type: object
+      properties:
+        op: { type: string }
+        statusCode: { type: integer }
+        requestCharge: { type: number }
+        resourceId: { type: string }
+        error: { type: string }
+
+    BulkResponse:
+      type: object
+      properties:
+        results:
+          type: array
+          items: { $ref: '#/components/schemas/BulkResultItem' }
+        totalRequestCharge: { type: number }
+
+    BatchOperation:
+      allOf:
+        - $ref: '#/components/schemas/BulkOperation'
+        - type: object
+          properties:
+            ifMatchEtag: { type: string }
+
+    BatchRequest:
+      type: object
+      required: [container, partitionKey, operations]
+      properties:
+        container: { type: string }
+        partitionKey:
+          oneOf:
+            - { type: string }
+            - { type: array, items: { type: string } }
+        operations:
+          type: array
+          items: { $ref: '#/components/schemas/BatchOperation' }
+
+    BatchResponse:
+      type: object
+      properties:
+        statusCode: { type: integer }
+        success: { type: boolean }
+        results:
+          type: array
+          items: { $ref: '#/components/schemas/BulkResultItem' }
+        requestCharge: { type: number }
+
+    ChangeFeedPullRequest:
+      type: object
+      required: [container]
+      properties:
+        container: { type: string }
+        startFrom: { type: string, enum: [beginning, now, continuation], default: now }
+        continuation: { type: string }
+        partitionKey:
+          oneOf:
+            - { type: string }
+            - { type: array, items: { type: string } }
+            - { type: 'null' }
+        feedRange: { $ref: '#/components/schemas/FeedRange' }
+        pageSize: { type: integer, default: 100 }
+
+    ChangeFeedPullResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { type: object, additionalProperties: true }
+        continuation: { type: string }
+        hasMoreResults: { type: boolean }
+        requestCharge: { type: number }
+
+    PatchOperation:
+      type: object
+      required: [op, path]
+      properties:
+        op: { type: string, enum: [add, set, replace, remove, increment, move] }
+        path: { type: string }
+        value: {}
+        from: { type: string, description: 'For move operations' }
+
+    PatchRequest:
+      type: object
+      required: [container, id, partitionKey, operations]
+      properties:
+        container: { type: string }
+        id: { type: string }
+        partitionKey:
+          oneOf:
+            - { type: string }
+            - { type: array, items: { type: string } }
+        ifMatchEtag: { type: string }
+        filterPredicate: { type: string }
+        operations:
+          type: array
+          items: { $ref: '#/components/schemas/PatchOperation' }
+
+    VectorSearchRequest:
+      type: object
+      required: [container, vector, k]
+      properties:
+        container: { type: string }
+        vectorPath: { type: string, default: /embedding }
+        vector:
+          type: array
+          items: { type: number }
+        k: { type: integer, minimum: 1, maximum: 100, default: 10 }
+        filter: { type: string, description: 'Optional SQL WHERE clause appended to query' }
+
+    VectorSearchResponse:
+      type: object
+      properties:
+        matches:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: string }
+              sellerId: { type: string }
+              name: { type: string }
+              score: { type: number }
+              document:
+                type: object
+                additionalProperties: true
+        requestCharge: { type: number }
+
+    WorkloadRunRequest:
+      type: object
+      properties:
+        parameters:
+          type: object
+          additionalProperties: true
+        durationSeconds: { type: integer }
+
+    WorkloadRunHandle:
+      type: object
+      required: [runId, workloadId]
+      properties:
+        runId: { type: string }
+        workloadId: { type: string }
+        startedAt: { type: string, format: date-time }
+
+    WorkloadRunStatus:
+      type: object
+      properties:
+        runId: { type: string }
+        workloadId: { type: string }
+        status: { type: string, enum: [running, completed, failed, cancelled] }
+        startedAt: { type: string, format: date-time }
+        completedAt: { type: ['string', 'null'], format: date-time }
+        steps:
+          type: array
+          items:
+            type: object
+            properties:
+              name: { type: string }
+              startedAt: { type: string, format: date-time }
+              durationMs: { type: number }
+              requestCharge: { type: number }
+              statusCode: { type: integer }
+              error: { type: string }
+        summary:
+          type: object
+          properties:
+            totalRequestCharge: { type: number }
+            totalDurationMs: { type: number }
+            assertionsPassed: { type: integer }
+            assertionsFailed: { type: integer }
