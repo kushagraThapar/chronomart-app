@@ -1,0 +1,46 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Gateway up",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "expr": "up{job=\"gateway\"}", "refId": "A" }],
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Gateway request rate by route",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{
+        "expr": "sum by (route) (rate(http_request_duration_seconds_count{job=\"gateway\"}[1m]))",
+        "refId": "A"
+      }],
+      "gridPos": { "h": 8, "w": 18, "x": 6, "y": 0 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Gateway latency P95 (s) by route",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{
+        "expr": "histogram_quantile(0.95, sum by (le, route) (rate(http_request_duration_seconds_bucket{job=\"gateway\"}[1m])))",
+        "refId": "A"
+      }],
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 8 }
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 39,
+  "tags": ["chronomart", "gateway"],
+  "time": { "from": "now-15m", "to": "now" },
+  "timezone": "browser",
+  "title": "ChronoMart — Gateway Overview",
+  "uid": "chronomart-gateway-overview",
+  "version": 1,
+  "weekStart": ""
+}

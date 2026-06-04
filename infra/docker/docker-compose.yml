@@ -1,0 +1,137 @@
+name: chronomart
+
+# Local development stack for ChronoMart.
+#
+#   Cosmos DB vNext emulator + observability sidecar (OTel collector + Prometheus + Grafana)
+#   + the Fastify gateway. Per-language backends are commented out below and get uncommented
+#   as each Phase-1 backend lands.
+#
+# Bring everything up:    docker compose -f infra/docker/docker-compose.yml up -d
+# Health-check the stack: ./scripts/dev/check.sh
+
+services:
+
+  # ─── Cosmos DB vNext emulator ───────────────────────────────────────────────
+  cosmos-emulator:
+    image: mcr.microsoft.com/cosmosdb/linux/azure-cosmos-emulator:vnext-latest
+    container_name: cm-cosmos-emulator
+    environment:
+      ENABLE_INIT_DATA: "true"
+      ENABLE_OTLP_EXPORTER: "true"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4317"
+      OTEL_SERVICE_NAME: "cosmos-emulator"
+    ports:
+      - "8081:8081"   # data plane (TLS)
+      - "8080:8080"   # health probes
+      - "1234:1234"   # Data Explorer
+    volumes:
+      - ../../scripts/seed:/init:ro
+      - cosmos-data:/data
+    networks: [chronomart]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:8080/ready || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+      start_period: 30s
+
+  # ─── Observability ──────────────────────────────────────────────────────────
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.108.0
+    container_name: cm-otel-collector
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ../observability/otel-collector/config.yaml:/etc/otelcol/config.yaml:ro
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+      - "8889:8889"   # Prometheus scrape endpoint exposed by the collector
+    networks: [chronomart]
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    container_name: cm-prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=24h
+    volumes:
+      - ../observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    networks: [chronomart]
+    depends_on: [otel-collector]
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    container_name: cm-grafana
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    volumes:
+      - ../observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ../observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    networks: [chronomart]
+    depends_on: [prometheus]
+
+  # ─── Gateway / Router ───────────────────────────────────────────────────────
+  gateway:
+    build:
+      context: ../../gateway
+      dockerfile: Dockerfile
+    container_name: cm-gateway
+    environment:
+      NODE_ENV: production
+      PORT: "8000"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4318"
+      OTEL_SERVICE_NAME: "chronomart-gateway"
+      # Backend URLs — set to empty to disable a backend route (returns 502 with helpful msg).
+      BACKEND_JAVA_URL: "http://java-backend:8101"
+      BACKEND_DOTNET_URL: "http://dotnet-backend:8102"
+      BACKEND_PYTHON_URL: "http://python-backend:8103"
+      BACKEND_RUST_URL: ""
+      BACKEND_GO_URL: ""
+      DEFAULT_SDK: "java"
+    ports:
+      - "8000:8000"
+    networks: [chronomart]
+    depends_on:
+      cosmos-emulator:
+        condition: service_healthy
+
+  # ─── Phase-1 backends (uncomment as they land) ──────────────────────────────
+  #
+  # java-backend:
+  #   build:
+  #     context: ../../backends/java
+  #   container_name: cm-java
+  #   environment:
+  #     COSMOS_ENDPOINT: "https://cosmos-emulator:8081/"
+  #     COSMOS_KEY:      "C2y6yDjf5/R+ob0N8A7Cgv30VRDJIWEHLM+4QDU5DE2nQ9nDuVTqobD4b8mGGyPMbIZnqyMsEcaGQy67XIw/Jw=="
+  #     COSMOS_AUTH_MODE: "key"
+  #     COSMOS_DATABASE: "ChronoMart"
+  #     COSMOS_ALLOW_INVALID_CERTS: "true"
+  #     OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4317"
+  #     OTEL_SERVICE_NAME: "chronomart-java"
+  #   ports: ["8101:8101"]
+  #   networks: [chronomart]
+  #   depends_on:
+  #     cosmos-emulator: { condition: service_healthy }
+  #
+  # dotnet-backend:
+  #   ... (Phase 2)
+  #
+  # python-backend:
+  #   ... (Phase 3)
+
+volumes:
+  cosmos-data:
+  grafana-data:
+
+networks:
+  chronomart:
+    driver: bridge

@@ -1,0 +1,70 @@
+# OS
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+# Editors
+.idea/
+.vscode/
+*.iml
+
+# Secrets
+.env
+.env.local
+*.pem
+*.key
+local.settings.json
+
+# Java
+target/
+*.class
+build/
+.gradle/
+.mvn/wrapper/maven-wrapper.jar
+
+# .NET
+bin/
+obj/
+*.user
+*.suo
+.vs/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+.tox/
+.mypy_cache/
+.ruff_cache/
+
+# Node / UI tooling
+node_modules/
+dist/
+.npm
+.pnpm-store/
+
+# Rust
+target/
+Cargo.lock
+
+# Go
+vendor/
+
+# Docker / runtime
+*.log
+data/
+cosmos-data/
+
+# Generated clients
+generated/
+openapi-generated/
+
+# Coverage
+coverage/
+*.lcov
+.nyc_output/
