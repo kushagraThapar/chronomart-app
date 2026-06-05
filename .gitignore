@@ -59,6 +59,7 @@ vendor/
 *.log
 data/
 cosmos-data/
+logs/
 
 # Generated clients
 generated/

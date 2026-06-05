@@ -53,6 +53,18 @@ automatically). Valid values: `java`, `dotnet`, `python`, `rust`, `go`. If a fea
 supported by the chosen SDK, the capability manifest returned from
 `/api/v1/_meta/capabilities` reports it as `false` and the UI greys-out that action.
 
+## Phase status
+
+| Phase | Status | Notes |
+|------:|:------:|:------|
+| 0     | ✅     | Gateway, OpenAPI v1, seed data, docker-compose, observability stack |
+| 1     | 🚧     | Java backend bootstrap (PR2 ready), CRUD/queries/bulk/changeFeed/vector in subsequent PRs |
+| 2-6   | ⏳     | .NET, Python, workloads framework, Rust+Go, AKS migration |
+
+The Java backend currently exposes `/healthz`, `/api/v1/_meta/capabilities`,
+`/api/v1/sellers`, `/api/v1/sellers/{id}` and idempotently provisions all containers
+(including repairing Cart's default TTL that cosmoshell seed scripts can't set).
+
 ## Authoritative design doc
 
 The full architecture, repository layout rationale, phasing, AKS migration path, and risks

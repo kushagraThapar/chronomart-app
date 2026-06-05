@@ -20,6 +20,14 @@ services:
       ENABLE_OTLP_EXPORTER: "true"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4317"
       OTEL_SERVICE_NAME: "cosmos-emulator"
+      # Java SDK requires TLS endpoints; emulator generates a self-signed cert and
+      # the SDK bypasses validation via COSMOS_EMULATOR_HOST / cert-skip flag.
+      PROTOCOL: "https"
+      # The emulator's database-account response advertises the gateway endpoint that
+      # SDKs use for subsequent calls. Without this it defaults to 127.0.0.1 which is
+      # unreachable from inside the chronomart-network. Setting it to the service name
+      # makes every backend talking from this network reach the gateway directly.
+      GATEWAY_PUBLIC_ENDPOINT: "cosmos-emulator"
     ports:
       - "8081:8081"   # data plane (TLS)
       - "8080:8080"   # health probes
@@ -103,25 +111,34 @@ services:
       cosmos-emulator:
         condition: service_healthy
 
-  # ─── Phase-1 backends (uncomment as they land) ──────────────────────────────
-  #
-  # java-backend:
-  #   build:
-  #     context: ../../backends/java
-  #   container_name: cm-java
-  #   environment:
-  #     COSMOS_ENDPOINT: "https://cosmos-emulator:8081/"
-  #     COSMOS_KEY:      "C2y6yDjf5/R+ob0N8A7Cgv30VRDJIWEHLM+4QDU5DE2nQ9nDuVTqobD4b8mGGyPMbIZnqyMsEcaGQy67XIw/Jw=="
-  #     COSMOS_AUTH_MODE: "key"
-  #     COSMOS_DATABASE: "ChronoMart"
-  #     COSMOS_ALLOW_INVALID_CERTS: "true"
-  #     OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4317"
-  #     OTEL_SERVICE_NAME: "chronomart-java"
-  #   ports: ["8101:8101"]
-  #   networks: [chronomart]
-  #   depends_on:
-  #     cosmos-emulator: { condition: service_healthy }
-  #
+  # ─── Phase-1 backends ───────────────────────────────────────────────────────
+
+  java-backend:
+    build:
+      context: ../../backends/java
+    container_name: cm-java
+    environment:
+      COSMOS_ENDPOINT: "https://cosmos-emulator:8081/"
+      COSMOS_KEY:      "C2y6yDjf5/R+ob0N8A7Cgv30VRDJIWEHLM+4QDU5DE2nQ9nDuVTqobD4b8mGGyPMbIZnqyMsEcaGQy67XIw/Jw=="
+      COSMOS_AUTH_MODE: "key"
+      COSMOS_DATABASE: "ChronoMart"
+      COSMOS_ALLOW_INVALID_CERTS: "true"
+      COSMOS_EMULATOR_HOST: "cosmos-emulator"
+      CHRONOMART_CONTAINER_INIT_ENABLED: "true"
+      # Set false until vNext emulator support for DiskANN vectors is confirmed.
+      CHRONOMART_CONTAINER_INIT_VECTOR: "false"
+      # Log file inside the container; bind-mounted out to the host below for tailing.
+      CHRONOMART_LOG_FILE: "/app/logs/chronomart-java.log"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4317"
+      OTEL_SERVICE_NAME: "chronomart-java"
+      JAVA_OPTS: "-XX:MaxRAMPercentage=75.0 -XX:+UseG1GC -Dlogging.level.com.azure.cosmos=INFO"
+    ports: ["8101:8101"]
+    volumes:
+      - ../../logs/java:/app/logs
+    networks: [chronomart]
+    depends_on:
+      cosmos-emulator: { condition: service_healthy }
+
   # dotnet-backend:
   #   ... (Phase 2)
   #
