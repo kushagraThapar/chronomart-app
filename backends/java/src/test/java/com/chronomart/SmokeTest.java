@@ -15,7 +15,7 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
     "chronomart.cosmos.endpoint=https://localhost:8081/",
     "chronomart.cosmos.key=test-key-not-used",
     "chronomart.cosmos.allow-invalid-certs=false",
-    "chronomart.cosmos.init.enabled=false"
+    "chronomart.cosmos.container-init.enabled=false"
 })
 class SmokeTest {
 

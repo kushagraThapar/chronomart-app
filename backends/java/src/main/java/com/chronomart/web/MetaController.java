@@ -35,8 +35,8 @@ public class MetaController {
     @GetMapping("/capabilities")
     public CapabilityManifest capabilities() {
         Map<String, Object> features = new LinkedHashMap<>();
-        // PR3 wires up point CRUD on single-PK containers and parameterised queries with
-        // continuation tokens. HPK CRUD, bulk/batch, change feed, vector search remain off.
+        // PR4 wires up HPK CRUD (ProductsHpk + Orders) and Cart with per-doc TTL on top
+        // of PR3's point CRUD + queries. Bulk/batch, change feed, vector search still off.
         features.put("pointCrud", true);
         features.put("queries", true);
         features.put("queriesCrossPartition", true);
@@ -45,7 +45,7 @@ public class MetaController {
         features.put("transactionalBatch", false);
         features.put("changeFeedPull", false);
         features.put("changeFeedProcessor", false);
-        features.put("hierarchicalPk", false);
+        features.put("hierarchicalPk", true);
         features.put("ttl", true);
         features.put("patch", false);
         features.put("vectorSearch", false);
