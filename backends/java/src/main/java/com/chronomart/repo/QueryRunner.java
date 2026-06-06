@@ -3,10 +3,8 @@ package com.chronomart.repo;
 import com.azure.cosmos.CosmosAsyncDatabase;
 import com.azure.cosmos.models.CosmosQueryRequestOptions;
 import com.azure.cosmos.models.PartitionKey;
-import com.azure.cosmos.models.PartitionKeyBuilder;
 import com.azure.cosmos.models.SqlParameter;
 import com.azure.cosmos.models.SqlQuerySpec;
-import com.chronomart.config.ChronomartProperties;
 import com.chronomart.web.dto.QueryRequest;
 import com.chronomart.web.dto.QueryResponse;
 import org.springframework.stereotype.Component;
@@ -38,29 +36,29 @@ import java.util.Set;
 public class QueryRunner {
 
     private final CosmosAsyncDatabase database;
-    private final Set<String> allowedContainers;
+    private final ContainerAllowList allowList;
 
-    public QueryRunner(CosmosAsyncDatabase database, ChronomartProperties props) {
+    public QueryRunner(CosmosAsyncDatabase database, ContainerAllowList allowList) {
         this.database = database;
-        ChronomartProperties.Containers c = props.containers();
-        this.allowedContainers = Set.of(
-            c.sellers(), c.products(), c.productsHpk(),
-            c.customers(), c.orders(), c.reviews(),
-            c.cart(), c.inventory(), c.productVectors(),
-            c.changeFeedLease()
-        );
+        this.allowList = allowList;
     }
 
     public Set<String> allowedContainers() {
-        return allowedContainers;
+        return allowList.names();
     }
 
     public Mono<QueryResponse> run(QueryRequest req) {
-        if (!allowedContainers.contains(req.container())) {
-            return Mono.error(new IllegalArgumentException(
-                "container '" + req.container() + "' is not in the allow-list: " + allowedContainers));
+        try {
+            allowList.requireAllowed(req.container());
+        } catch (IllegalArgumentException e) {
+            return Mono.error(e);
         }
-        PartitionKey pk = buildPartitionKey(req.partitionKey());
+        PartitionKey pk;
+        try {
+            pk = allowList.parse(req.partitionKey());
+        } catch (IllegalArgumentException e) {
+            return Mono.error(e);
+        }
         if (pk == null && !req.crossPartitionEnabled()) {
             return Mono.error(new IllegalArgumentException(
                 "partitionKey is required unless enableCrossPartition=true"));
@@ -112,56 +110,4 @@ public class QueryRunner {
         return new ArrayList<>(byName.values());
     }
 
-    /**
-     * Accepts either a {@link String} (single-level PK), a {@link List} of strings/numbers
-     * (hierarchical PK levels), or {@code null}. {@code null} or an empty list returns
-     * {@code null} so the caller can decide whether to require cross-partition. Blank
-     * strings are rejected explicitly so they cannot silently degrade to "no PK".
-     */
-    private static PartitionKey buildPartitionKey(Object raw) {
-        if (raw == null) return null;
-        if (raw instanceof String s) {
-            if (s.isBlank()) {
-                throw new IllegalArgumentException(
-                    "partitionKey must not be blank — omit the field for cross-partition");
-            }
-            return new PartitionKey(s);
-        }
-        if (raw instanceof List<?> list) {
-            if (list.isEmpty()) return null;
-            PartitionKeyBuilder b = new PartitionKeyBuilder();
-            for (Object v : list) {
-                if (v == null) {
-                    throw new IllegalArgumentException("partitionKey levels cannot contain null");
-                }
-                if (v instanceof String s)      b.add(s);
-                else if (v instanceof Boolean bo) b.add(bo);
-                else if (v instanceof Number n) {
-                    // PartitionKeyBuilder only accepts double for numbers. For integral
-                    // values that exceed double's safe-integer range (±2^53), silently
-                    // downcasting would route the request to the wrong partition. Reject
-                    // explicitly for Long (handling Long.MIN_VALUE separately since
-                    // Math.abs(Long.MIN_VALUE) overflows) and BigInteger (Jackson uses
-                    // these for JSON integers outside long range). Float/Double/BigDecimal
-                    // pass through unchanged — they're already lossy by nature.
-                    if (n instanceof java.math.BigInteger bi && bi.bitLength() > 53) {
-                        throw new IllegalArgumentException(
-                            "partitionKey numeric level " + bi + " exceeds the safe double range "
-                                + "(±2^53); send it as a string to preserve precision");
-                    }
-                    if (n instanceof Long l && (l == Long.MIN_VALUE || Math.abs(l) > (1L << 53))) {
-                        throw new IllegalArgumentException(
-                            "partitionKey numeric level " + l + " exceeds the safe double range "
-                                + "(±2^53); send it as a string to preserve precision");
-                    }
-                    b.add(n.doubleValue());
-                }
-                else throw new IllegalArgumentException(
-                    "unsupported partitionKey level type: " + v.getClass().getName());
-            }
-            return b.build();
-        }
-        throw new IllegalArgumentException(
-            "partitionKey must be a string or array of primitives, got " + raw.getClass().getName());
-    }
 }
