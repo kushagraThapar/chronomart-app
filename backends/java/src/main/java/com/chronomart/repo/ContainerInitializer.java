@@ -85,12 +85,18 @@ public class ContainerInitializer implements ApplicationRunner {
         // Cart — single PK + 7-day default TTL (NOT settable from cosmoshell)
         ensureCartContainer(props.containers().cart());
 
-        // Hierarchical-PK containers — present from seed. The leaf level is always /id so
-        // a fully-qualified point read routes to a single physical partition; partial-prefix
-        // queries (e.g. by sellerId only) still benefit from hierarchical prefix routing.
-        // See contracts/domain.md → Containers table.
-        ensureHpk(props.containers().productsHpk(), List.of("/sellerId", "/categoryId", "/id"));
-        ensureHpk(props.containers().orders(), List.of("/customerId", "/yearMonth", "/id"));
+        // Hierarchical-PK containers — present from seed. Targeting 2-level HPK on the
+        // vNext emulator: the cosmoshell seed and the Java SDK's createContainer both
+        // reliably create /sellerId,/categoryId (resp. /customerId,/yearMonth). The
+        // contract docs target a 3rd /id leaf for routed point reads, but the vNext
+        // emulator's createContainer fails with a Postgres E22P02 InternalServerError on
+        // 3-level HPK from the Java SDK (the same shape via direct REST POST succeeds,
+        // suggesting a SDK<->emulator wire-format mismatch). Tracked as a deferred goal;
+        // once vNext supports the 3-level Java create — or once we move to a real Cosmos
+        // account — flip these lists to add "/id" and ContainerInitializer will recreate
+        // (since PK definition is immutable, that path requires drop + recreate).
+        ensureHpk(props.containers().productsHpk(), List.of("/sellerId", "/categoryId"));
+        ensureHpk(props.containers().orders(), List.of("/customerId", "/yearMonth"));
 
         // Vector container — only place vector policy can be set; gated by feature flag.
         if (props.containerInit().createVectorContainer()) {

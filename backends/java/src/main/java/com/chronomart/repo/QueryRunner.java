@@ -136,7 +136,26 @@ public class QueryRunner {
                 }
                 if (v instanceof String s)      b.add(s);
                 else if (v instanceof Boolean bo) b.add(bo);
-                else if (v instanceof Number n)   b.add(n);
+                else if (v instanceof Number n) {
+                    // PartitionKeyBuilder only accepts double for numbers. For integral
+                    // values that exceed double's safe-integer range (±2^53), silently
+                    // downcasting would route the request to the wrong partition. Reject
+                    // explicitly for Long (handling Long.MIN_VALUE separately since
+                    // Math.abs(Long.MIN_VALUE) overflows) and BigInteger (Jackson uses
+                    // these for JSON integers outside long range). Float/Double/BigDecimal
+                    // pass through unchanged — they're already lossy by nature.
+                    if (n instanceof java.math.BigInteger bi && bi.bitLength() > 53) {
+                        throw new IllegalArgumentException(
+                            "partitionKey numeric level " + bi + " exceeds the safe double range "
+                                + "(±2^53); send it as a string to preserve precision");
+                    }
+                    if (n instanceof Long l && (l == Long.MIN_VALUE || Math.abs(l) > (1L << 53))) {
+                        throw new IllegalArgumentException(
+                            "partitionKey numeric level " + l + " exceeds the safe double range "
+                                + "(±2^53); send it as a string to preserve precision");
+                    }
+                    b.add(n.doubleValue());
+                }
                 else throw new IllegalArgumentException(
                     "unsupported partitionKey level type: " + v.getClass().getName());
             }
