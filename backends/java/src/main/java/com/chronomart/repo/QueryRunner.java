@@ -136,7 +136,7 @@ public class QueryRunner {
                 }
                 if (v instanceof String s)      b.add(s);
                 else if (v instanceof Boolean bo) b.add(bo);
-                else if (v instanceof Number n)   b.add(n.doubleValue());
+                else if (v instanceof Number n)   b.add(n);
                 else throw new IllegalArgumentException(
                     "unsupported partitionKey level type: " + v.getClass().getName());
             }
