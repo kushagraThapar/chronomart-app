@@ -43,7 +43,7 @@ public class MetaController {
         features.put("continuationTokens", true);
         features.put("bulk", true);
         features.put("transactionalBatch", true);
-        features.put("changeFeedPull", false);
+        features.put("changeFeedPull", true);
         features.put("changeFeedProcessor", false);
         features.put("hierarchicalPk", true);
         features.put("ttl", true);
