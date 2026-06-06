@@ -35,10 +35,12 @@ public class MetaController {
     @GetMapping("/capabilities")
     public CapabilityManifest capabilities() {
         Map<String, Object> features = new LinkedHashMap<>();
-        // Read paths are wired; writes/queries land in PR3.
-        features.put("pointCrud", false);
-        features.put("queries", false);
-        features.put("queriesCrossPartition", false);
+        // PR3 wires up point CRUD on single-PK containers and parameterised queries with
+        // continuation tokens. HPK CRUD, bulk/batch, change feed, vector search remain off.
+        features.put("pointCrud", true);
+        features.put("queries", true);
+        features.put("queriesCrossPartition", true);
+        features.put("continuationTokens", true);
         features.put("bulk", false);
         features.put("transactionalBatch", false);
         features.put("changeFeedPull", false);

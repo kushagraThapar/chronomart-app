@@ -117,6 +117,17 @@ export async function build(): Promise<FastifyInstance> {
     }
   });
 
+  // Headers that must be stripped from the inbound request before being forwarded:
+  //  - content-length: body is re-serialized below, so the inbound length may be wrong.
+  //    undici recomputes it from the outgoing body.
+  //  - host: refers to the gateway, not the backend; undici sets it from the target URL.
+  //  - transfer-encoding / connection: hop-by-hop per RFC 7230 §6.1.
+  const HOP_BY_HOP = new Set([
+    "host", "content-length", "transfer-encoding", "connection",
+    "keep-alive", "proxy-authenticate", "proxy-authorization",
+    "te", "trailers", "upgrade"
+  ]);
+
   // Catch-all proxy for everything else under /api/v1/* — forwards to the selected backend.
   app.all("/api/v1/*", async (req: FastifyRequest, reply: FastifyReply) => {
     const sdk = pickSdk(req, defaultSdk);
@@ -137,6 +148,7 @@ export async function build(): Promise<FastifyInstance> {
     try {
       const headers: Record<string, string> = {};
       for (const [k, v] of Object.entries(req.headers)) {
+        if (HOP_BY_HOP.has(k.toLowerCase())) continue;
         if (Array.isArray(v)) headers[k] = v.join(", ");
         else if (typeof v === "string") headers[k] = v;
       }
@@ -159,7 +171,7 @@ export async function build(): Promise<FastifyInstance> {
       reply.header("x-cm-sdk", sdk);
       reply.header("x-cm-gateway-latency-ms", elapsedMs.toFixed(2));
       for (const [k, v] of Object.entries(res.headers)) {
-        if (k.toLowerCase() === "transfer-encoding" || k.toLowerCase() === "connection") continue;
+        if (HOP_BY_HOP.has(k.toLowerCase())) continue;
         if (typeof v === "string") reply.header(k, v);
       }
       const buf = await res.body.arrayBuffer();
