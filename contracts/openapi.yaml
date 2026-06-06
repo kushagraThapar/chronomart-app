@@ -830,7 +830,7 @@ components:
           type: array
           items: { $ref: '#/components/schemas/CartItem' }
         updatedAt: { type: string, format: date-time }
-        ttl: { type: integer, description: 'Override container TTL; -1 disables TTL for this doc.' }
+        ttl: { type: integer, minimum: -1, description: 'Override container TTL (seconds); -1 disables TTL for this doc, positive sets expiry, null inherits container default.' }
 
     Inventory:
       type: object

@@ -3,6 +3,7 @@ package com.chronomart.domain;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonInclude.Include;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 
@@ -27,5 +28,5 @@ public record Cart(
     @NotBlank String customerId,
     @NotNull List<@Valid CartItem> items,
     Instant updatedAt,
-    Integer ttl
+    @Min(-1) Integer ttl
 ) {}
