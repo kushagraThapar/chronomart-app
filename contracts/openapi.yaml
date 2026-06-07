@@ -500,6 +500,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ChangeFeedPullResponse' }
+        "400": { $ref: '#/components/responses/BadRequest' }
         "501": { $ref: '#/components/responses/NotImplemented' }
 
   /patch:
@@ -961,7 +962,7 @@ components:
             - { type: array, items: { type: string } }
             - { type: 'null' }
         feedRange: { $ref: '#/components/schemas/FeedRange' }
-        pageSize: { type: integer, default: 100 }
+        pageSize: { type: integer, minimum: 1, maximum: 1000, default: 100 }
 
     ChangeFeedPullResponse:
       type: object
@@ -969,8 +970,12 @@ components:
         items:
           type: array
           items: { type: object, additionalProperties: true }
-        continuation: { type: string }
-        hasMoreResults: { type: boolean }
+        continuation:
+          type: string
+          description: 'Opaque continuation token. ALWAYS returned (even when items is empty) so the caller can poll again.'
+        notModified:
+          type: boolean
+          description: 'true when the change feed was caught up at this point in time (no new items returned). Callers should wait before polling again.'
         requestCharge: { type: number }
 
     PatchOperation:
