@@ -46,6 +46,7 @@ public class MetaController {
     private final ContainerAllowList allowList;
     private final CosmosAsyncDatabase database;
     private final DiagnosticsRecorder diagnostics;
+    private final com.chronomart.repo.VectorContainerStatus vectorStatus;
 
     @Value("${chronomart.build.version:0.1.0-SNAPSHOT}")
     private String buildVersion;
@@ -53,18 +54,22 @@ public class MetaController {
     public MetaController(ChronomartProperties props,
                           ContainerAllowList allowList,
                           CosmosAsyncDatabase database,
-                          DiagnosticsRecorder diagnostics) {
+                          DiagnosticsRecorder diagnostics,
+                          com.chronomart.repo.VectorContainerStatus vectorStatus) {
         this.props = props;
         this.allowList = allowList;
         this.database = database;
         this.diagnostics = diagnostics;
+        this.vectorStatus = vectorStatus;
     }
 
     @GetMapping("/capabilities")
     public CapabilityManifest capabilities() {
         Map<String, Object> features = new LinkedHashMap<>();
-        // PR7 lights up diagnostics + feed-ranges + cache inspection. Change feed pull
-        // landed in PR6; bulk/batch/patch in PR5; HPK + TTL in PR4. Vector search next.
+        // PR8 lights up vector search (gated on the ProductVectors container actually
+        // having been provisioned at startup — the harness must not lie about features
+        // it cannot deliver). PR7 wired diagnostics + feed-ranges + cache inspection.
+        // Change feed pull landed in PR6; bulk/batch/patch in PR5; HPK + TTL in PR4.
         features.put("pointCrud", true);
         features.put("queries", true);
         features.put("queriesCrossPartition", true);
@@ -76,7 +81,7 @@ public class MetaController {
         features.put("hierarchicalPk", true);
         features.put("ttl", true);
         features.put("patch", true);
-        features.put("vectorSearch", false);
+        features.put("vectorSearch", vectorStatus.isReady());
         features.put("fullTextSearch", false);
         features.put("feedRanges", true);
         // "all" = handler fires on every op (zero thresholds). "threshold" would mean
@@ -102,7 +107,10 @@ public class MetaController {
             List.of("v1"),
             features,
             limits,
-            "none"   // embedding provider — wired in PR8 along with vector search
+            // synthetic-hash-1024 reflects EmbeddingGenerator's deterministic algorithm.
+            // It is NOT a semantic embedding model — same seed → identical vector → top-1
+            // distance ≈ 0. Suitable for testing the SDK wire path; not for recall quality.
+            vectorStatus.isReady() ? "synthetic-hash-1024 (test-only, no semantic meaning)" : "none"
         );
     }
 

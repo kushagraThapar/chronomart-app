@@ -1009,13 +1009,21 @@ components:
       type: object
       required: [container, vector, k]
       properties:
-        container: { type: string }
-        vectorPath: { type: string, default: /embedding }
+        container:
+          type: string
+          description: |
+            Target container name; must be in the backend's container allow-list and
+            have a vector embedding policy + index defined. For the Java backend this
+            is `ProductVectors` (1024-dim, FLOAT32, COSINE, DiskANN on `/embedding`).
+          example: ProductVectors
         vector:
           type: array
+          description: |
+            Query vector. Dimensionality MUST match the container's embedding policy
+            (`ProductVectors` requires exactly 1024 numeric values). The Java backend
+            internally narrows to FLOAT32 to match the indexed `CosmosVectorDataType`.
           items: { type: number }
         k: { type: integer, minimum: 1, maximum: 100, default: 10 }
-        filter: { type: string, description: 'Optional SQL WHERE clause appended to query' }
 
     VectorSearchResponse:
       type: object
@@ -1026,9 +1034,22 @@ components:
             type: object
             properties:
               id: { type: string }
+              productId: { type: string }
               sellerId: { type: string }
               name: { type: string }
-              score: { type: number }
+              score:
+                type: number
+                description: |
+                  Raw value returned by `VectorDistance(c.embedding, @vec)`. Its meaning
+                  depends on the container's distance function:
+                    * COSINE → cosine similarity in [-1, 1], **higher = closer** (vNext
+                      emulator and Cosmos DB return ~1.0 for an exact match; orthogonal
+                      unit vectors return ~0).
+                    * EUCLIDEAN → L2 distance in [0, ∞), **lower = closer**.
+                    * DOT_PRODUCT → dot product, **higher = closer**.
+                  Cosmos always returns `matches` ordered most-similar-first regardless of
+                  the underlying sign — operators should not assume a specific ASC/DESC
+                  semantics on `score` values directly.
               document:
                 type: object
                 additionalProperties: true

@@ -52,4 +52,4 @@ chronomart:
     emulator-host: ${COSMOS_EMULATOR_HOST:}
     container-init:
       enabled: ${CHRONOMART_CONTAINER_INIT_ENABLED:true}
-      create-vector-container: ${CHRONOMART_CONTAINER_INIT_VECTOR:false}
+      create-vector-container: ${CHRONOMART_CONTAINER_INIT_VECTOR:true}
