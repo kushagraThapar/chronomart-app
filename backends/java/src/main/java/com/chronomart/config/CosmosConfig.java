@@ -4,6 +4,9 @@ import com.azure.cosmos.ConsistencyLevel;
 import com.azure.cosmos.CosmosAsyncClient;
 import com.azure.cosmos.CosmosAsyncDatabase;
 import com.azure.cosmos.CosmosClientBuilder;
+import com.azure.cosmos.CosmosDiagnosticsThresholds;
+import com.azure.cosmos.models.CosmosClientTelemetryConfig;
+import com.chronomart.repo.DiagnosticsRecorder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.annotation.Bean;
@@ -11,6 +14,7 @@ import org.springframework.context.annotation.Configuration;
 
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.time.Duration;
 import java.util.Objects;
 
 /**
@@ -35,7 +39,8 @@ public class CosmosConfig {
     private static final Logger log = LoggerFactory.getLogger(CosmosConfig.class);
 
     @Bean
-    public CosmosAsyncClient cosmosAsyncClient(ChronomartProperties props) {
+    public CosmosAsyncClient cosmosAsyncClient(ChronomartProperties props,
+                                                DiagnosticsRecorder diagnosticsRecorder) {
         if (props.endpoint() == null || props.endpoint().isBlank()) {
             throw new IllegalStateException("chronomart.cosmos.endpoint must be set");
         }
@@ -72,12 +77,21 @@ public class CosmosConfig {
 
         String chronomartVersion = Objects.requireNonNullElse(
             getClass().getPackage().getImplementationVersion(), "dev");
+        // Zero thresholds = handler fires for every operation, not just slow ones. This is
+        // dev/diagnostic-only behavior; verified by PR7 e2e (one product read produces a
+        // captured entry). For prod use OTel via metricsOptions instead.
+        CosmosClientTelemetryConfig telemetry = new CosmosClientTelemetryConfig()
+            .diagnosticsThresholds(new CosmosDiagnosticsThresholds()
+                .setPointOperationLatencyThreshold(Duration.ZERO)
+                .setNonPointOperationLatencyThreshold(Duration.ZERO))
+            .diagnosticsHandler(diagnosticsRecorder);
         CosmosClientBuilder builder = new CosmosClientBuilder()
             .endpoint(props.endpoint())
             .key(props.key())
             .consistencyLevel(ConsistencyLevel.SESSION)
             .userAgentSuffix("chronomart-java/" + chronomartVersion)
-            .contentResponseOnWriteEnabled(true);
+            .contentResponseOnWriteEnabled(true)
+            .clientTelemetryConfig(telemetry);
 
         if (looksLikeEmulator) {
             // Gateway mode avoids the direct-mode port mapping song & dance against the emulator.
