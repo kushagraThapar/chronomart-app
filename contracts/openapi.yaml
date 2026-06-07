@@ -693,9 +693,10 @@ components:
                 items:
                   type: object
                   properties:
-                    id: { type: string }
-                    minInclusive: { type: string }
-                    maxExclusive: { type: string }
+                    id: { type: string, description: 'PK range id — null until SDK exposes it' }
+                    minInclusive: { type: string, description: 'EPK lower bound — null until SDK exposes it' }
+                    maxExclusive: { type: string, description: 'EPK upper bound — null until SDK exposes it' }
+                    opaque: { type: string, description: 'SDK-provided opaque token for the range' }
         containerCache:
           type: array
           items:
@@ -703,8 +704,9 @@ components:
             properties:
               database: { type: string }
               container: { type: string }
-              rid: { type: string }
-              loadedAt: { type: string, format: date-time }
+              rid: { type: string, description: 'null when the container could not be read (see error)' }
+              snapshotAt: { type: string, format: date-time, description: 'When this snapshot row was generated (NOT when the SDK loaded it)' }
+              error: { type: string, description: 'Populated when the container read failed — e.g. not provisioned' }
 
     FeedRange:
       type: object
