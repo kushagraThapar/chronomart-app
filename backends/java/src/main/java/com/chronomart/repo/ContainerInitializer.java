@@ -177,40 +177,63 @@ public class ContainerInitializer implements ApplicationRunner {
 
     /**
      * Provision a vector-enabled container. The vector embedding policy + DiskANN index
-     * can only be set on the container at creation time (cannot be altered later), so we
-     * skip the recreate path if the container already exists — but we DO read the existing
-     * policy and warn loudly if it diverges from what this code wants, so a constant change
-     * (e.g. bumping {@link #VECTOR_DIMENSIONS} without a drop+recreate) becomes visible at
-     * the next boot instead of producing confusing runtime errors.
+     * can only be set at container creation time (Cosmos does not allow altering it
+     * later), so the "exists already" path is read-and-verify; the "doesn't exist" path
+     * is create-then-read-and-verify.
      *
-     * <p>On success this flips {@link VectorContainerStatus#markReady()}; otherwise the
-     * status stays {@code notReady} and the capability manifest + vector controller honor
-     * it (the harness must not lie about features it cannot deliver).
+     * <p>{@link VectorContainerStatus#markReady()} is called in EXACTLY one place — after
+     * {@link #checkExistingVectorPolicy(String, CosmosContainerProperties)} returns
+     * {@code true}. Both the "existed" and "just created" branches funnel through that
+     * single gate so a {@code markReady()} call without policy verification is
+     * structurally impossible. (This shape was hardened in response to a Copilot review
+     * that caught the existed-branch flipping ready unconditionally, and protects the
+     * symmetric create-branch case where vNext has been observed to silently drop the
+     * embedding policy on the very first create.)
+     *
+     * <p>If anything fails, status stays {@code notReady} and the capability manifest
+     * plus {@code VectorController} honor it — the harness must not advertise a feature
+     * it cannot deliver.
      */
     private void ensureVectorContainer(String name) {
+        CosmosContainerProperties verifiedProps = acquireVectorContainer(name);
+        if (verifiedProps == null) {
+            return; // failure already logged by acquireVectorContainer
+        }
+        if (!checkExistingVectorPolicy(name, verifiedProps)) {
+            log.warn("  container '{}' exists but vector policy is incompatible; leaving vector search OFF",
+                name);
+            return;
+        }
+        vectorStatus.markReady();
+        log.info("  vector search ready on container '{}' (dim={}, {}, DiskANN)",
+            name, VECTOR_DIMENSIONS, VECTOR_DISTANCE_FUNCTION);
+    }
+
+    /**
+     * Read-or-create the {@code ProductVectors} container, then read it back so the
+     * properties we return reflect what Cosmos actually persisted (not what the SDK
+     * sent in the create call). Returns {@code null} on any failure, with the failure
+     * logged at WARN.
+     */
+    private CosmosContainerProperties acquireVectorContainer(String name) {
         try {
             CosmosAsyncContainer existing = database.getContainer(name);
             CosmosContainerResponse readResp = existing.read().block(VECTOR_CREATE_TIMEOUT);
             if (readResp != null) {
-                if (checkExistingVectorPolicy(name, readResp.getProperties())) {
-                    vectorStatus.markReady();
-                    log.info("  container '{}' already exists; vector search ready", name);
-                } else {
-                    log.warn("  container '{}' exists but vector policy is incompatible; leaving vector search OFF", name);
-                }
-                return;
+                log.info("  vector container '{}' already exists", name);
+                return readResp.getProperties();
             }
         } catch (com.azure.cosmos.CosmosException ce) {
             if (ce.getStatusCode() != 404) {
                 log.warn("  could not read vector container '{}': status={} — leaving vector search OFF",
                     name, ce.getStatusCode());
-                return;
+                return null;
             }
-            // fall through to create
+            // 404 → fall through to create
         } catch (RuntimeException re) {
             log.warn("  could not read vector container '{}': {} — leaving vector search OFF",
                 name, re.getMessage());
-            return;
+            return null;
         }
 
         PartitionKeyDefinition pk = new PartitionKeyDefinition().setPaths(List.of("/productId"));
@@ -238,28 +261,65 @@ public class ContainerInitializer implements ApplicationRunner {
 
         try {
             database.createContainer(desired).block(VECTOR_CREATE_TIMEOUT);
-            vectorStatus.markReady();
-            log.info("  container '{}' created (vector dim={}, {}, DiskANN); vector search ready",
+            log.info("  vector container '{}' created (dim={}, {}, DiskANN); verifying persisted policy",
                 name, VECTOR_DIMENSIONS, VECTOR_DISTANCE_FUNCTION);
         } catch (RuntimeException e) {
             log.warn("  could not provision vector container '{}': {} — leaving vector search OFF "
                 + "(see /api/v1/_meta/diagnostics for the SDK call detail)",
                 name, e.getMessage());
+            return null;
+        }
+
+        // vNext has been observed to silently drop the embedding policy on the very
+        // first create (checkpoint 010), so re-read regardless of create-success to
+        // ensure the returned properties reflect what was actually persisted.
+        try {
+            CosmosContainerResponse verify = database.getContainer(name).read().block(VECTOR_CREATE_TIMEOUT);
+            return verify != null ? verify.getProperties() : null;
+        } catch (RuntimeException re) {
+            log.warn("  could not verify vector container '{}' after create: {} — leaving vector search OFF",
+                name, re.getMessage());
+            return null;
         }
     }
 
     /**
-     * Loud comparison of an existing {@code ProductVectors} container's embedding policy
-     * against the values this code would create. Container properties are immutable post-
-     * creation, so we cannot auto-repair — but a warn keeps the operator from chasing
-     * silent dimension-mismatch errors at query time.
+     * Decide whether an existing {@code ProductVectors} container is usable for vector
+     * search. The primary signal is the {@link IndexingPolicy#getVectorIndexes() vector
+     * index registration} — that is what Cosmos actually consults to plan a vector query.
+     * The {@code vectorEmbeddingPolicy} is advisory metadata for clients; vNext has been
+     * observed (checkpoint 010 and PR8 follow-up) to silently strip it during create even
+     * when the index registration persists and queries continue to work fine.
+     *
+     * <p>So the contract is:
+     * <ul>
+     *   <li>no vector index on the expected path → not ready (search would full-scan)</li>
+     *   <li>index present, embedding policy missing → ready with WARN (vNext gap)</li>
+     *   <li>index present, embedding policy present but mismatched → not ready (real drift)</li>
+     *   <li>both present and matching → ready (the happy real-Cosmos path)</li>
+     * </ul>
+     *
+     * <p>Container properties are immutable post-creation, so any "not ready" path
+     * requires a manual drop+recreate — we cannot auto-repair.
+     *
+     * <p>Package-private to enable {@code ContainerInitializerVectorPolicyTest} to exercise
+     * the predicate without booting a Cosmos client.
      */
-    private boolean checkExistingVectorPolicy(String name, CosmosContainerProperties existing) {
+    boolean checkExistingVectorPolicy(String name, CosmosContainerProperties existing) {
+        if (!hasVectorIndexOnPath(existing.getIndexingPolicy())) {
+            log.warn("  container '{}' has no vector index on '{}' — vector search would full-scan. "
+                + "Drop and recreate the container to fix.", name, VECTOR_EMBEDDING_PATH);
+            return false;
+        }
+
         CosmosVectorEmbeddingPolicy policy = existing.getVectorEmbeddingPolicy();
         if (policy == null || policy.getVectorEmbeddings() == null || policy.getVectorEmbeddings().isEmpty()) {
-            log.warn("  container '{}' exists but has NO vector embedding policy — vector search will fail. "
-                + "Drop and recreate the container to fix.", name);
-            return false;
+            log.warn("  container '{}' has vector index on '{}' but no embedding policy metadata "
+                + "— this is a known vNext emulator gap (policy stripped during create). "
+                + "Vector search will still work via the index; dim/distance cannot be "
+                + "cross-verified at boot, so VectorSearchRunner's request-side dimension "
+                + "check is the only guard.", name, VECTOR_EMBEDDING_PATH);
+            return true;
         }
         CosmosVectorEmbedding actual = policy.getVectorEmbeddings().get(0);
         Integer actualDim = actual.getEmbeddingDimensions();
@@ -284,5 +344,11 @@ public class ContainerInitializer implements ApplicationRunner {
             valid = false;
         }
         return valid;
+    }
+
+    private static boolean hasVectorIndexOnPath(IndexingPolicy policy) {
+        if (policy == null || policy.getVectorIndexes() == null) return false;
+        return policy.getVectorIndexes().stream()
+            .anyMatch(idx -> VECTOR_EMBEDDING_PATH.equals(idx.getPath()));
     }
 }
