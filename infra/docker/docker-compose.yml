@@ -125,8 +125,10 @@ services:
       COSMOS_ALLOW_INVALID_CERTS: "true"
       COSMOS_EMULATOR_HOST: "cosmos-emulator"
       CHRONOMART_CONTAINER_INIT_ENABLED: "true"
-      # Set false until vNext emulator support for DiskANN vectors is confirmed.
-      CHRONOMART_CONTAINER_INIT_VECTOR: "false"
+      # PR8: provision ProductVectors (1024-dim cosine, DiskANN) at startup. The runner
+      # honors VectorContainerStatus and returns 501 if vNext rejects the creation
+      # request — the harness must not lie about features it cannot actually deliver.
+      CHRONOMART_CONTAINER_INIT_VECTOR: "true"
       # Log file inside the container; bind-mounted out to the host below for tailing.
       CHRONOMART_LOG_FILE: "/app/logs/chronomart-java.log"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4317"
