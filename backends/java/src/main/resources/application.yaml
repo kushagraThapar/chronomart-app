@@ -25,12 +25,35 @@ management:
     metrics:
       export:
         enabled: true
+  # OTLP push of the same Micrometer registry to the OTel Collector. This is strictly
+  # additive to the Prometheus scrape — both paths emit the same metrics; PR9
+  # documents this and Phase-5 (Rust/Go onboarding) is the right time to consolidate
+  # to OTLP-only once the other backends rely on the collector path.
+  #
+  # The endpoint MUST be OTLP/HTTP (port 4318 in our compose), not OTLP/gRPC (4317).
+  # We deliberately use a Spring-specific env var (MANAGEMENT_OTLP_METRICS_EXPORT_URL)
+  # instead of the generic OTEL_EXPORTER_OTLP_ENDPOINT, because that generic var is
+  # conventionally gRPC and is consumed unchanged by the non-Spring backends
+  # (Rust/Go) we'll add later.
+  #
+  # Spring Boot 4 gotcha: OtlpMetricsExportAutoConfiguration depends on
+  # OpenTelemetryProperties, which lives in spring-boot-opentelemetry-autoconfigure
+  # (pulled in by the spring-boot-starter-opentelemetry dependency in pom.xml).
+  # Without that starter on the classpath, the OTLP registry silently no-ops even
+  # when micrometer-registry-otlp is present.
+  otlp:
+    metrics:
+      export:
+        enabled: ${MANAGEMENT_OTLP_METRICS_EXPORT_ENABLED:true}
+        url: ${MANAGEMENT_OTLP_METRICS_EXPORT_URL:http://localhost:4318/v1/metrics}
+        step: ${MANAGEMENT_OTLP_METRICS_EXPORT_STEP:10s}
 
 logging:
   level:
     root: INFO
     com.chronomart: DEBUG
     com.azure.cosmos: INFO
+    io.micrometer.registry.otlp: ${LOGGING_LEVEL_OTLP:INFO}
   file:
     name: ${CHRONOMART_LOG_FILE:logs/chronomart-java.log}
   logback:

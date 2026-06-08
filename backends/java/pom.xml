@@ -43,6 +43,23 @@
             <groupId>io.micrometer</groupId>
             <artifactId>micrometer-registry-prometheus</artifactId>
         </dependency>
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-otlp</artifactId>
+        </dependency>
+        <!--
+            Spring Boot 4 split out the OpenTelemetry autoconfig (and its
+            OpenTelemetryProperties bean) into a separate starter. The OTLP
+            metrics auto-config (OtlpMetricsExportAutoConfiguration) has a
+            @ConditionalOnClass / bean dependency on OpenTelemetryProperties,
+            so OTLP push silently no-ops without this starter on the
+            classpath even when micrometer-registry-otlp is present.
+            See: org.springframework.boot.opentelemetry.autoconfigure.OpenTelemetryProperties
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-opentelemetry</artifactId>
+        </dependency>
 
         <dependency>
             <groupId>com.azure</groupId>
