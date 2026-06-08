@@ -192,9 +192,12 @@ public class ContainerInitializer implements ApplicationRunner {
             CosmosAsyncContainer existing = database.getContainer(name);
             CosmosContainerResponse readResp = existing.read().block(VECTOR_CREATE_TIMEOUT);
             if (readResp != null) {
-                checkExistingVectorPolicy(name, readResp.getProperties());
-                vectorStatus.markReady();
-                log.info("  container '{}' already exists; vector search ready", name);
+                if (checkExistingVectorPolicy(name, readResp.getProperties())) {
+                    vectorStatus.markReady();
+                    log.info("  container '{}' already exists; vector search ready", name);
+                } else {
+                    log.warn("  container '{}' exists but vector policy is incompatible; leaving vector search OFF", name);
+                }
                 return;
             }
         } catch (com.azure.cosmos.CosmosException ce) {
@@ -251,30 +254,35 @@ public class ContainerInitializer implements ApplicationRunner {
      * creation, so we cannot auto-repair — but a warn keeps the operator from chasing
      * silent dimension-mismatch errors at query time.
      */
-    private void checkExistingVectorPolicy(String name, CosmosContainerProperties existing) {
+    private boolean checkExistingVectorPolicy(String name, CosmosContainerProperties existing) {
         CosmosVectorEmbeddingPolicy policy = existing.getVectorEmbeddingPolicy();
         if (policy == null || policy.getVectorEmbeddings() == null || policy.getVectorEmbeddings().isEmpty()) {
             log.warn("  container '{}' exists but has NO vector embedding policy — vector search will fail. "
                 + "Drop and recreate the container to fix.", name);
-            return;
+            return false;
         }
         CosmosVectorEmbedding actual = policy.getVectorEmbeddings().get(0);
         Integer actualDim = actual.getEmbeddingDimensions();
+        boolean valid = true;
         if (actualDim == null || actualDim != VECTOR_DIMENSIONS) {
             log.warn("  container '{}' embedding dimensions={} but code expects {} — "
                 + "search requests bound by VectorSearchRunner will reject mismatched vectors. "
                 + "Drop and recreate the container to fix.", name, actualDim, VECTOR_DIMENSIONS);
+            valid = false;
         }
         if (actual.getDistanceFunction() != VECTOR_DISTANCE_FUNCTION) {
             log.warn("  container '{}' distance function={} but code expects {} — "
                 + "score interpretation will be wrong. Drop and recreate the container to fix.",
                 name, actual.getDistanceFunction(), VECTOR_DISTANCE_FUNCTION);
+            valid = false;
         }
         if (!VECTOR_EMBEDDING_PATH.equals(actual.getPath())) {
             log.warn("  container '{}' embedding path='{}' but code expects '{}' — "
                 + "VectorSearchRunner targets the expected path and will miss the index. "
                 + "Drop and recreate the container to fix.",
                 name, actual.getPath(), VECTOR_EMBEDDING_PATH);
+            valid = false;
         }
+        return valid;
     }
 }
