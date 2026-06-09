@@ -1,0 +1,76 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Java backend up",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "expr": "up{job=\"java-backend\"}", "refId": "A" }],
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 }
+    },
+    {
+      "type": "stat",
+      "title": "JVM heap used (MB)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{
+        "expr": "sum(jvm_memory_used_bytes{job=\"java-backend\",area=\"heap\"}) / 1024 / 1024",
+        "refId": "A"
+      }],
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 4 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Request rate by URI",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{
+        "expr": "sum by (uri) (rate(http_server_requests_seconds_count{job=\"java-backend\",uri!~\"/actuator.*\"}[1m]))",
+        "refId": "A"
+      }],
+      "gridPos": { "h": 8, "w": 18, "x": 6, "y": 0 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Request latency P95 (s) by URI",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{
+        "expr": "histogram_quantile(0.95, sum by (le, uri) (rate(http_server_requests_seconds_bucket{job=\"java-backend\",uri!~\"/actuator.*\"}[2m])))",
+        "refId": "A"
+      }],
+      "gridPos": { "h": 8, "w": 18, "x": 6, "y": 8 }
+    },
+    {
+      "type": "timeseries",
+      "title": "5xx error rate by URI",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{
+        "expr": "sum by (uri, status) (rate(http_server_requests_seconds_count{job=\"java-backend\",status=~\"5..\"}[1m]))",
+        "refId": "A"
+      }],
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 16 }
+    },
+    {
+      "type": "timeseries",
+      "title": "JVM heap used by area (bytes)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{
+        "expr": "sum by (area) (jvm_memory_used_bytes{job=\"java-backend\"})",
+        "refId": "A"
+      }],
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 24 }
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 39,
+  "tags": ["chronomart", "java-backend"],
+  "time": { "from": "now-15m", "to": "now" },
+  "timezone": "browser",
+  "title": "ChronoMart — Java Backend Overview",
+  "uid": "chronomart-java-overview",
+  "version": 1,
+  "weekStart": ""
+}
