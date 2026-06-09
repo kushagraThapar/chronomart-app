@@ -133,6 +133,11 @@ services:
       CHRONOMART_LOG_FILE: "/app/logs/chronomart-java.log"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4317"
       OTEL_SERVICE_NAME: "chronomart-java"
+      # Spring-specific OTLP/HTTP push for Micrometer metrics (PR9). Micrometer's OTLP
+      # registry uses OTLP/HTTP (port 4318), not OTLP/gRPC (4317 above), so the URL
+      # is set explicitly rather than derived from OTEL_EXPORTER_OTLP_ENDPOINT.
+      MANAGEMENT_OTLP_METRICS_EXPORT_URL: "http://otel-collector:4318/v1/metrics"
+      MANAGEMENT_OTLP_METRICS_EXPORT_STEP: "10s"
       JAVA_OPTS: "-XX:MaxRAMPercentage=75.0 -XX:+UseG1GC -Dlogging.level.com.azure.cosmos=INFO"
     ports: ["8101:8101"]
     volumes:
