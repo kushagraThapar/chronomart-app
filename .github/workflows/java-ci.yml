@@ -39,6 +39,13 @@ on:
       - 'scripts/dev/**'
       - 'scripts/seed/**'
       - '.github/workflows/java-ci.yml'
+  # Allow ad-hoc manual runs from the Actions tab (useful for debugging CI
+  # without pushing a commit that touches a path-filtered file).
+  workflow_dispatch:
+
+# Least-privilege token: this workflow only reads the repository.
+permissions:
+  contents: read
 
 # Cancel superseded runs on the same ref (e.g. successive PR pushes).
 concurrency:
@@ -78,7 +85,11 @@ jobs:
   smoke:
     name: docker-compose smoke
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # Cold-runner budget: ~5 min image pull (1.5 GB vNext emulator) +
+    # ~3 min docker build + ~5.5 min emulator health convergence (start_period 30s
+    # + retries 60 × 5s) + ~3 min java-backend health poll + ~1 min check.sh ≈ 18 min.
+    # 25 min gives a comfortable buffer for GHA disk-IO variance without being open-ended.
+    timeout-minutes: 25
     needs: build
     steps:
       - uses: actions/checkout@v4
