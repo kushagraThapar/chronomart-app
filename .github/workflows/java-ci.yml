@@ -1,0 +1,135 @@
+name: Java backend CI
+
+# Two-stage CI for the Java backend slice (Phase 1):
+#
+#   1. build      — checkout, JDK 21, Maven cache, `mvn verify` (compile +
+#                   unit tests including SmokeTest and the vector-policy
+#                   contract tests). Runs on every PR and main push that
+#                   touches Java code or shared infra.
+#
+#   2. smoke      — boots the full docker-compose stack (vNext emulator,
+#                   otel-collector, prometheus, grafana, gateway,
+#                   java-backend), waits for java-backend `/actuator/health`
+#                   to report UP, then runs `scripts/dev/check.sh` to assert
+#                   every plumbing endpoint responds. Captures container
+#                   logs on failure so we can diagnose remotely.
+#
+# Path filters keep CI focused: changes to .NET / Python / UI code don't
+# trigger this workflow, but anything that can break the Java slice
+# (Java sources, gateway code, docker-compose, observability config,
+# scripts, this workflow itself) does.
+
+on:
+  pull_request:
+    paths:
+      - 'backends/java/**'
+      - 'gateway/**'
+      - 'infra/docker/**'
+      - 'infra/observability/**'
+      - 'scripts/dev/**'
+      - 'scripts/seed/**'
+      - '.github/workflows/java-ci.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'backends/java/**'
+      - 'gateway/**'
+      - 'infra/docker/**'
+      - 'infra/observability/**'
+      - 'scripts/dev/**'
+      - 'scripts/seed/**'
+      - '.github/workflows/java-ci.yml'
+
+# Cancel superseded runs on the same ref (e.g. successive PR pushes).
+concurrency:
+  group: java-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build + unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      # `verify` runs everything through the verify phase: compile, test-compile,
+      # surefire unit tests, jar packaging. No live Cosmos endpoint is required —
+      # SmokeTest disables container-init and mocks the Cosmos beans.
+      - name: Maven verify
+        run: mvn -B -ntp -f backends/java/pom.xml verify
+
+      - name: Upload Surefire reports on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: surefire-reports
+          path: backends/java/target/surefire-reports
+          if-no-files-found: ignore
+          retention-days: 7
+
+  smoke:
+    name: docker-compose smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+
+      # The vNext emulator image is ~1.5GB — let it pull while the gateway and
+      # java-backend images are built in parallel.
+      - name: Build & start ChronoMart stack
+        run: |
+          docker compose -f infra/docker/docker-compose.yml up -d --build \
+            cosmos-emulator otel-collector prometheus grafana gateway java-backend
+
+      - name: Wait for java-backend /actuator/health UP
+        # vNext emulator typically becomes healthy within 30s; the java-backend
+        # then waits on it and boots in another ~10s. 3-minute budget is
+        # generous to cover GH Actions disk-IO variance and image pulls.
+        run: |
+          set -e
+          for i in $(seq 1 60); do
+            status=$(curl -fsS http://localhost:8101/actuator/health 2>/dev/null \
+              | python3 -c 'import sys,json; print(json.load(sys.stdin).get("status",""))' \
+              2>/dev/null || true)
+            if [ "$status" = "UP" ]; then
+              echo "java-backend reports UP (after ${i} attempts, ~$((i * 3))s)"
+              exit 0
+            fi
+            sleep 3
+          done
+          echo "::error::java-backend did not report UP within budget"
+          exit 1
+
+      - name: Run check script
+        run: bash scripts/dev/check.sh
+
+      - name: Capture container logs on failure
+        if: failure()
+        run: |
+          mkdir -p logs-capture
+          for svc in cosmos-emulator otel-collector prometheus grafana gateway java-backend; do
+            docker compose -f infra/docker/docker-compose.yml logs --no-color "$svc" \
+              > "logs-capture/${svc}.log" 2>&1 || true
+          done
+
+      - name: Upload container logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: container-logs
+          path: logs-capture
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Tear down stack
+        if: always()
+        run: docker compose -f infra/docker/docker-compose.yml down -v
