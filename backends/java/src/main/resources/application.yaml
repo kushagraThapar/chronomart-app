@@ -25,6 +25,15 @@ management:
     metrics:
       export:
         enabled: true
+  # Enable histogram buckets for Spring's http.server.requests timer so dashboards
+  # can compute histogram_quantile() for p50/p95/p99 latency. Without this Spring
+  # only emits seconds_count / seconds_sum / seconds_max (summary form) — no bucket
+  # series — and PromQL histogram_quantile() returns no data. The Cosmos SDK timer
+  # already emits buckets natively; this only affects Spring's request timer.
+  metrics:
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true
   # OTLP push of the same Micrometer registry to the OTel Collector. This is strictly
   # additive to the Prometheus scrape — both paths emit the same metrics; PR9
   # documents this and Phase-5 (Rust/Go onboarding) is the right time to consolidate
