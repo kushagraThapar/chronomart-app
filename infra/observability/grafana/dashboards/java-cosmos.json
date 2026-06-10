@@ -12,6 +12,7 @@
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [{
         "expr": "sum by (Operation) (rate(cosmos_client_op_calls_total{job=\"java-backend\"}[1m]))",
+        "legendFormat": "{{Operation}}",
         "refId": "A"
       }],
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 }
@@ -22,8 +23,10 @@
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [{
         "expr": "histogram_quantile(0.95, sum by (le, Operation) (rate(cosmos_client_op_latency_seconds_bucket{job=\"java-backend\"}[2m])))",
+        "legendFormat": "{{Operation}}",
         "refId": "A"
       }],
+      "fieldConfig": { "defaults": { "unit": "s" } },
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 }
     },
     {
@@ -32,6 +35,7 @@
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [{
         "expr": "sum by (Operation, Container) (rate(cosmos_client_op_RUs_RU__request_unit__sum{job=\"java-backend\"}[1m]))",
+        "legendFormat": "{{Operation}} × {{Container}}",
         "refId": "A"
       }],
       "gridPos": { "h": 8, "w": 24, "x": 0, "y": 8 }
@@ -42,6 +46,7 @@
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [{
         "expr": "sum by (OperationStatusCode, Operation) (rate(cosmos_client_op_calls_total{job=\"java-backend\",OperationStatusCode!~\"2..\"}[1m]))",
+        "legendFormat": "{{Operation}} ({{OperationStatusCode}})",
         "refId": "A"
       }],
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 }
@@ -52,6 +57,7 @@
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [{
         "expr": "histogram_quantile(0.95, sum by (le, Operation) (rate(cosmos_client_op_RUs_RU__request_unit__bucket{job=\"java-backend\"}[2m])))",
+        "legendFormat": "{{Operation}}",
         "refId": "A"
       }],
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 }

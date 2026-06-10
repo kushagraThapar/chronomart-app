@@ -11,6 +11,22 @@
       "title": "Java backend up",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [{ "expr": "up{job=\"java-backend\"}", "refId": "A" }],
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "DOWN", "color": "red" } } },
+            { "type": "value", "options": { "1": { "text": "UP", "color": "green" } } }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "green", "value": 1 }
+            ]
+          }
+        }
+      },
+      "options": { "colorMode": "background" },
       "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 }
     },
     {
@@ -21,7 +37,18 @@
         "expr": "sum(jvm_memory_used_bytes{job=\"java-backend\",area=\"heap\"}) / 1024 / 1024",
         "refId": "A"
       }],
+      "fieldConfig": { "defaults": { "unit": "decmbytes" } },
       "gridPos": { "h": 4, "w": 6, "x": 0, "y": 4 }
+    },
+    {
+      "type": "stat",
+      "title": "JVM live threads",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{
+        "expr": "sum(jvm_threads_live_threads{job=\"java-backend\"})",
+        "refId": "A"
+      }],
+      "gridPos": { "h": 8, "w": 6, "x": 0, "y": 8 }
     },
     {
       "type": "timeseries",
@@ -29,6 +56,7 @@
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [{
         "expr": "sum by (uri) (rate(http_server_requests_seconds_count{job=\"java-backend\",uri!~\"/actuator.*\"}[1m]))",
+        "legendFormat": "{{uri}}",
         "refId": "A"
       }],
       "gridPos": { "h": 8, "w": 18, "x": 6, "y": 0 }
@@ -39,8 +67,10 @@
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [{
         "expr": "histogram_quantile(0.95, sum by (le, uri) (rate(http_server_requests_seconds_bucket{job=\"java-backend\",uri!~\"/actuator.*\"}[2m])))",
+        "legendFormat": "{{uri}}",
         "refId": "A"
       }],
+      "fieldConfig": { "defaults": { "unit": "s" } },
       "gridPos": { "h": 8, "w": 18, "x": 6, "y": 8 }
     },
     {
@@ -49,6 +79,7 @@
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [{
         "expr": "sum by (uri, status) (rate(http_server_requests_seconds_count{job=\"java-backend\",status=~\"5..\"}[1m]))",
+        "legendFormat": "{{uri}} ({{status}})",
         "refId": "A"
       }],
       "gridPos": { "h": 8, "w": 24, "x": 0, "y": 16 }
@@ -59,8 +90,10 @@
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [{
         "expr": "sum by (area) (jvm_memory_used_bytes{job=\"java-backend\"})",
+        "legendFormat": "{{area}}",
         "refId": "A"
       }],
+      "fieldConfig": { "defaults": { "unit": "bytes" } },
       "gridPos": { "h": 8, "w": 24, "x": 0, "y": 24 }
     }
   ],
