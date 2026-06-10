@@ -56,18 +56,25 @@ public class ProductRepo {
 
     /**
      * Paged list. When {@code sellerId} is supplied the query is single-partition (cheap);
-     * when {@code null} it falls back to a cross-partition scan ordered by {@code id}.
+     * when {@code null} it falls back to a cross-partition scan.
+     *
+     * <p><b>No {@code ORDER BY}.</b> The azure-cosmos 4.x SDK eagerly materializes the full
+     * result set on the first {@code byPage(...)} page for {@code ORDER BY} queries when the
+     * result fits in a single round-trip, ignoring the requested page size. Dropping
+     * {@code ORDER BY} keeps {@code pageSize} enforced and continuation tokens meaningful,
+     * which is the whole point of this endpoint for the test harness. Caller-side sort is
+     * required if a specific order is needed; the UI catalog handles that.
      */
     public Mono<Page<Product>> list(String sellerId, int pageSize, String continuation) {
         SqlQuerySpec spec;
         CosmosQueryRequestOptions opts = new CosmosQueryRequestOptions();
         if (sellerId != null && !sellerId.isBlank()) {
             spec = new SqlQuerySpec(
-                "SELECT * FROM c WHERE c.sellerId = @sellerId ORDER BY c.id",
+                "SELECT * FROM c WHERE c.sellerId = @sellerId",
                 List.of(new SqlParameter("@sellerId", sellerId)));
             opts.setPartitionKey(new PartitionKey(sellerId));
         } else {
-            spec = new SqlQuerySpec("SELECT * FROM c ORDER BY c.id");
+            spec = new SqlQuerySpec("SELECT * FROM c");
         }
         return container.queryItems(spec, opts, Product.class)
             .byPage(continuation, pageSize)
