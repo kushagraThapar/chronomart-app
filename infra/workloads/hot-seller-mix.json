@@ -1,0 +1,36 @@
+{
+  "name": "hot-seller-mix",
+  "durationSeconds": 30,
+  "concurrency": 16,
+  "rampSeconds": 0,
+  "steps": [
+    {
+      "op": "pointRead",
+      "container": "Products",
+      "weight": 70,
+      "params": {
+        "ids": ["prod-001","prod-002","prod-003"],
+        "partitionKeys": ["seller-001"]
+      }
+    },
+    {
+      "op": "query",
+      "container": "Products",
+      "weight": 25,
+      "params": {
+        "query": "SELECT * FROM c WHERE c.sellerId = @s",
+        "parameters": [{"name": "@s", "value": "seller-001"}],
+        "partitionKey": "seller-001",
+        "pageSize": 20
+      }
+    },
+    {
+      "op": "cartUpsert",
+      "container": "Cart",
+      "weight": 5,
+      "params": {
+        "customerIds": ["load-cust-A","load-cust-B","load-cust-C","load-cust-D"]
+      }
+    }
+  ]
+}
