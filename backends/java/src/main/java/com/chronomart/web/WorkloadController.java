@@ -44,14 +44,13 @@ public class WorkloadController {
     }
 
     @PostMapping("/run")
-    @org.springframework.web.bind.annotation.ResponseStatus(HttpStatus.ACCEPTED)
-    public Map<String, Object> run(@Valid @RequestBody WorkloadSpec spec) {
+    public ResponseEntity<Map<String, Object>> run(@Valid @RequestBody WorkloadSpec spec) {
         String runId = engine.start(spec);
-        return Map.of(
+        return ResponseEntity.status(HttpStatus.ACCEPTED).body(Map.of(
             "runId", runId,
             "name", spec.name(),
             "status", "RUNNING"
-        );
+        ));
     }
 
     @GetMapping("/{runId}")

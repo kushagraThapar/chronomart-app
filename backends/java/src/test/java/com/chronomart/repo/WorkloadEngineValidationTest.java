@@ -132,6 +132,15 @@ class WorkloadEngineValidationTest {
             .hasMessageContaining("Cart container");
     }
 
+    @Test
+    void rejectsCartUpsertWithoutCustomerIds() {
+        WorkloadStep bad = new WorkloadStep("cartUpsert", "Cart", 1, Map.of());
+        assertThatThrownBy(() -> engine.start(
+            new WorkloadSpec("no-customer-ids", 10, 1, 0, List.of(bad))))
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessageContaining("customerIds");
+    }
+
     private static WorkloadStep validPointReadStep() {
         return new WorkloadStep("pointRead", "Products", 1,
             Map.of(

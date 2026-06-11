@@ -121,7 +121,11 @@ public class WorkloadEngine {
         this.database = database;
         this.allowList = allowList;
         this.queryRunner = queryRunner;
-        this.queryRunner.allowedContainers(); // touch to ensure bean wired
+        // Eagerly verify the allow-list is non-empty so a misconfigured bean fails fast
+        // at startup rather than at the first workload run.
+        if (this.queryRunner.allowedContainers().isEmpty()) {
+            throw new IllegalStateException("QueryRunner has no allowed containers — check ContainerAllowList config");
+        }
         this.registry = registry;
     }
 
@@ -295,11 +299,13 @@ public class WorkloadEngine {
     }
 
     private Mono<OpResult> executePointRead(WorkloadStep step) {
+        // ids is validated as List<?> in validateStepParams; elements may be any JSON scalar.
+        // Use toString() so integer IDs like [1,2,3] don't ClassCastException at runtime.
         @SuppressWarnings("unchecked")
-        List<String> ids = (List<String>) step.params().get("ids");
+        List<?> rawIds = (List<?>) step.params().get("ids");
         Object pksRaw = step.params().get("partitionKeys");
-        int i = ThreadLocalRandom.current().nextInt(ids.size());
-        String id = ids.get(i);
+        int i = ThreadLocalRandom.current().nextInt(rawIds.size());
+        String id = rawIds.get(i).toString();
         Object pkRaw;
         if (pksRaw instanceof List<?> pks) {
             pkRaw = pks.size() == 1 ? pks.get(0) : pks.get(i);
@@ -328,7 +334,9 @@ public class WorkloadEngine {
             }
         }
         Integer pageSize = p.get("pageSize") instanceof Number n ? n.intValue() : null;
-        Boolean xPart = (Boolean) p.get("enableCrossPartition");
+        // Pattern-match to avoid ClassCastException when a string "true" is sent instead
+        // of a JSON boolean true (both are valid JSON but only the latter deserialises as Boolean).
+        Boolean xPart = p.get("enableCrossPartition") instanceof Boolean b ? b : null;
         QueryRequest req = new QueryRequest(
             step.container(),
             (String) p.get("query"),
@@ -346,9 +354,11 @@ public class WorkloadEngine {
     }
 
     private Mono<OpResult> executeCartUpsert(WorkloadStep step) {
+        // customerIds validated as List<?> in validateStepParams; toString() guards
+        // against non-string JSON scalars (e.g. integer IDs) to avoid ClassCastException.
         @SuppressWarnings("unchecked")
-        List<String> customerIds = (List<String>) step.params().get("customerIds");
-        String customerId = customerIds.get(ThreadLocalRandom.current().nextInt(customerIds.size()));
+        List<?> rawCustomerIds = (List<?>) step.params().get("customerIds");
+        String customerId = rawCustomerIds.get(ThreadLocalRandom.current().nextInt(rawCustomerIds.size())).toString();
         Map<String, Object> doc = synthesizeCart(customerId);
         CosmosAsyncContainer container = database.getContainer(step.container());
         return container.upsertItem(doc, new PartitionKey(customerId), new CosmosItemRequestOptions())

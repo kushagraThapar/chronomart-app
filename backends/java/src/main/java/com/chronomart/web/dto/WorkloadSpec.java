@@ -23,6 +23,10 @@ import java.util.List;
  * up to 32 steps. The concurrency ceiling reflects what the local emulator can sustain
  * before RU throttling dominates; real Cosmos accounts can go higher and the cap should be
  * configurable later.
+ *
+ * <p><b>Note:</b> The {@code @Max(64)} on {@code concurrency} must be kept in sync with
+ * {@link com.chronomart.repo.WorkloadEngine#MAX_CONCURRENCY}. Annotation values must be
+ * compile-time constants, so they cannot reference the field directly.
  */
 @JsonInclude(Include.NON_NULL)
 public record WorkloadSpec(
