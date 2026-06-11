@@ -1,0 +1,15 @@
+{
+  "name": "bulk-ingest",
+  "durationSeconds": 30,
+  "concurrency": 4,
+  "rampSeconds": 0,
+  "steps": [
+    {
+      "op": "bulk",
+      "container": "Inventory",
+      "weight": 100,
+      "params": { "batchSize": 100 }
+    }
+  ],
+  "_notes": "bulk lands in PR2; uses the existing BulkRunner."
+}

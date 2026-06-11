@@ -88,7 +88,7 @@ public class MetaController {
         // capture-on-violation. "none" means no recorder wired.
         features.put("diagnostics", "all");
         features.put("cacheInspection", true);
-        features.put("workloads", List.of());
+        features.put("workloads", com.chronomart.repo.WorkloadEngine.KNOWN_OPS);
 
         Map<String, Object> limits = Map.of(
             "maxBulkItems", 100,

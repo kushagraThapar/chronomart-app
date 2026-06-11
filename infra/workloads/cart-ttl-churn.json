@@ -1,0 +1,34 @@
+{
+  "name": "cart-ttl-churn",
+  "durationSeconds": 30,
+  "concurrency": 16,
+  "rampSeconds": 0,
+  "steps": [
+    {
+      "op": "cartUpsert",
+      "container": "Cart",
+      "weight": 80,
+      "params": {
+        "customerIds": [
+          "churn-A","churn-B","churn-C","churn-D","churn-E",
+          "churn-F","churn-G","churn-H","churn-I","churn-J"
+        ]
+      }
+    },
+    {
+      "op": "pointRead",
+      "container": "Cart",
+      "weight": 20,
+      "params": {
+        "ids": [
+          "churn-A","churn-B","churn-C","churn-D","churn-E",
+          "churn-F","churn-G","churn-H","churn-I","churn-J"
+        ],
+        "partitionKeys": [
+          "churn-A","churn-B","churn-C","churn-D","churn-E",
+          "churn-F","churn-G","churn-H","churn-I","churn-J"
+        ]
+      }
+    }
+  ]
+}
