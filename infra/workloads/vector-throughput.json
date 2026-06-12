@@ -8,8 +8,16 @@
       "op": "vectorSearch",
       "container": "ProductVectors",
       "weight": 100,
-      "params": { "k": 5 }
+      "params": {
+        "seeds": [
+          "automatic dive watch",
+          "vintage dress watch",
+          "racing chronograph",
+          "field tool watch",
+          "solar everyday"
+        ],
+        "k": 5
+      }
     }
-  ],
-  "_notes": "vectorSearch lands in PR2 — the engine generates a random 1024-dim probe per call."
+  ]
 }

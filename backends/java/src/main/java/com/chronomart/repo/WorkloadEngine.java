@@ -5,7 +5,10 @@ import com.azure.cosmos.CosmosAsyncDatabase;
 import com.azure.cosmos.CosmosException;
 import com.azure.cosmos.models.CosmosItemRequestOptions;
 import com.azure.cosmos.models.PartitionKey;
+import com.chronomart.web.dto.BulkOperation;
+import com.chronomart.web.dto.BulkRequest;
 import com.chronomart.web.dto.QueryRequest;
+import com.chronomart.web.dto.VectorSearchRequest;
 import com.chronomart.web.dto.WorkloadOpStats;
 import com.chronomart.web.dto.WorkloadProgress;
 import com.chronomart.web.dto.WorkloadSpec;
@@ -64,11 +67,25 @@ import java.util.concurrent.atomic.AtomicLong;
  *   <li><b>cartUpsert</b> — params {@code {customerIds: String[]}}. Builds a synthetic
  *       cart with 1..3 items (Map shape so we don't have to round-trip the strict
  *       {@code Cart} domain validators on every op) and upserts to {@code Cart}.</li>
+ *   <li><b>pointUpsert</b> — params {@code {partitionKeys, pkField, idPrefix?, template?}}.
+ *       Synthesises {@code {id: idPrefix+rand, [pkField]: pickedPk, ...template}} and
+ *       upserts. Works against any allow-listed container; the caller picks the PK field
+ *       name to keep the engine domain-agnostic (Products=sellerId, Cart=customerId, ...).</li>
+ *   <li><b>hpkPointRead</b> — params {@code {ids: String[], partitionKeys: List<List<Object>>}}.
+ *       Each {@code partitionKeys} entry must itself be a 2- or 3-level list (hierarchical).
+ *       Validator-distinct from {@code pointRead} so a preset that meant to exercise HPK
+ *       routing fails loudly rather than silently degrading to a single-level key.</li>
+ *   <li><b>vectorSearch</b> — params {@code {seeds: String[], k?}}. Each op picks a seed,
+ *       deterministically generates a 1024-FLOAT32 unit vector via {@link EmbeddingGenerator},
+ *       and runs {@link VectorSearchRunner#search} with TOP-K (default 10). Container MUST
+ *       be vector-enabled (gated on {@link VectorContainerStatus}).</li>
+ *   <li><b>bulk</b> — params {@code {op, partitionKey, batchSize, idPrefix?, template?}}.
+ *       Each op execution = one bulk request with {@code batchSize} items, so the ops/sec
+ *       metric stays "bulk requests/sec" not "items/sec". Delegates to {@link BulkRunner}.</li>
  * </ul>
  *
- * <p>Other ops (hpkPointRead, vectorSearch, bulk, ...) reject with
- * {@code "op '<name>' is not yet implemented"} at spec-validation time so PR2 can light
- * them up without breaking the wire contract.
+ * <p>Every named op listed in {@link #KNOWN_OPS} is wired and executable; unknown ops
+ * are rejected with a generic "unknown op" message at spec-validation time.
  *
  * <h2>State storage</h2>
  * <p>Each run holds a {@link WorkloadRunState} kept by {@link WorkloadRegistry}. A
@@ -82,17 +99,30 @@ public class WorkloadEngine {
     private static final Logger LOG = LoggerFactory.getLogger(WorkloadEngine.class);
 
     /** Server-side ceiling on per-run concurrency. The vNext emulator on a laptop tops out
-     *  around 32-64 concurrent ops before RU throttling dominates. */
+     *  around 32-64 concurrent ops before RU throttling dominates.
+     *
+     *  <p><b>Note:</b> the {@code @Max} on {@link WorkloadSpec#concurrency()} must be kept
+     *  in sync with this constant (annotation values must be compile-time constants and
+     *  cannot reference this field). */
     public static final int MAX_CONCURRENCY = 64;
 
-    /** Ops the engine knows how to execute today. Anything else is rejected at start. */
-    public static final List<String> SUPPORTED_OPS = List.of("pointRead", "query", "cartUpsert");
-
-    /** Ops named in the OpenAPI capability manifest but not yet wired. Listed here so
-     *  validation errors are friendly ("not yet implemented") not generic ("unknown op"). */
+    /** Every op named here is wired and executable. The validator uses this list both for
+     *  the unknown-op error message and as the source of truth for the capability manifest. */
     public static final List<String> KNOWN_OPS = List.of(
         "pointRead", "pointUpsert", "query", "hpkPointRead", "vectorSearch", "bulk", "cartUpsert"
     );
+
+    /** Containers that {@code hpkPointRead} accepts. Other containers are allow-listed but
+     *  not hierarchical, so an HPK-shaped read against them would silently degrade. */
+    private static final Set<String> HPK_CONTAINERS = Set.of("ProductsHpk", "Orders");
+
+    /** Bulk batch-size envelope. Upper bound matches {@code BulkRequest.operations} @Size(100). */
+    private static final int BULK_MIN_BATCH = 1;
+    private static final int BULK_MAX_BATCH = 100;
+
+    /** vectorSearch top-K range — mirrors {@code VectorSearchRequest}. */
+    private static final int VECTOR_MIN_K = 1;
+    private static final int VECTOR_MAX_K = 100;
 
     /** Time-series snapshot interval. 1s matches the chart resolution in the UI. */
     private static final Duration SNAPSHOT_INTERVAL = Duration.ofSeconds(1);
@@ -105,6 +135,9 @@ public class WorkloadEngine {
     private final CosmosAsyncDatabase database;
     private final ContainerAllowList allowList;
     private final QueryRunner queryRunner;
+    private final BulkRunner bulkRunner;
+    private final VectorSearchRunner vectorSearchRunner;
+    private final EmbeddingGenerator embeddingGenerator;
     private final WorkloadRegistry registry;
 
     private final ScheduledExecutorService snapshotter =
@@ -117,10 +150,16 @@ public class WorkloadEngine {
     public WorkloadEngine(CosmosAsyncDatabase database,
                           ContainerAllowList allowList,
                           QueryRunner queryRunner,
+                          BulkRunner bulkRunner,
+                          VectorSearchRunner vectorSearchRunner,
+                          EmbeddingGenerator embeddingGenerator,
                           WorkloadRegistry registry) {
         this.database = database;
         this.allowList = allowList;
         this.queryRunner = queryRunner;
+        this.bulkRunner = bulkRunner;
+        this.vectorSearchRunner = vectorSearchRunner;
+        this.embeddingGenerator = embeddingGenerator;
         // Eagerly verify the allow-list is non-empty so a misconfigured bean fails fast
         // at startup rather than at the first workload run.
         if (this.queryRunner.allowedContainers().isEmpty()) {
@@ -194,10 +233,6 @@ public class WorkloadEngine {
                 throw new IllegalArgumentException(
                     "unknown op '" + s.op() + "'. Known: " + KNOWN_OPS);
             }
-            if (!SUPPORTED_OPS.contains(s.op())) {
-                throw new IllegalArgumentException(
-                    "op '" + s.op() + "' is not yet implemented (PR2). Supported in v1: " + SUPPORTED_OPS);
-            }
             validateStepParams(s);
         }
     }
@@ -225,7 +260,7 @@ public class WorkloadEngine {
                 if (!(p.get("query") instanceof String q) || q.isBlank()) {
                     throw new IllegalArgumentException("query requires non-blank params.query");
                 }
-                Boolean xPart = (Boolean) p.get("enableCrossPartition");
+                Boolean xPart = p.get("enableCrossPartition") instanceof Boolean b ? b : null;
                 if (p.get("partitionKey") == null && !Boolean.TRUE.equals(xPart)) {
                     throw new IllegalArgumentException(
                         "query requires params.partitionKey or params.enableCrossPartition=true");
@@ -238,6 +273,121 @@ public class WorkloadEngine {
                 if (!"Cart".equalsIgnoreCase(s.container())) {
                     throw new IllegalArgumentException(
                         "cartUpsert must target the Cart container (got " + s.container() + ")");
+                }
+            }
+            case "pointUpsert" -> {
+                if (!(p.get("partitionKeys") instanceof List<?> pks) || pks.isEmpty()) {
+                    throw new IllegalArgumentException("pointUpsert requires non-empty params.partitionKeys[]");
+                }
+                if (!(p.get("pkField") instanceof String pkField) || pkField.isBlank()) {
+                    throw new IllegalArgumentException(
+                        "pointUpsert requires params.pkField (the field name on the synthesised doc "
+                            + "that holds the partition key value, e.g. 'sellerId' for Products)");
+                }
+                // Reject hierarchical PK shapes here — pointUpsert sets a single field, so
+                // a list-of-lists PK couldn't be reflected onto the doc without invented
+                // schema. Use the bulk op for HPK writes.
+                for (Object pk : pks) {
+                    if (pk instanceof List<?>) {
+                        throw new IllegalArgumentException(
+                            "pointUpsert does not support hierarchical partition keys "
+                                + "(level " + pkField + " is single-field). Use 'bulk' for HPK writes.");
+                    }
+                }
+                if (p.get("template") != null && !(p.get("template") instanceof Map<?, ?>)) {
+                    throw new IllegalArgumentException("pointUpsert params.template must be an object");
+                }
+            }
+            case "hpkPointRead" -> {
+                if (!HPK_CONTAINERS.contains(s.container())) {
+                    throw new IllegalArgumentException(
+                        "hpkPointRead must target a hierarchical container " + HPK_CONTAINERS
+                            + " (got " + s.container() + "). Use 'pointRead' for single-level keys.");
+                }
+                if (!(p.get("ids") instanceof List<?> ids) || ids.isEmpty()) {
+                    throw new IllegalArgumentException("hpkPointRead requires non-empty params.ids[]");
+                }
+                if (!(p.get("partitionKeys") instanceof List<?> pks) || pks.isEmpty()) {
+                    throw new IllegalArgumentException(
+                        "hpkPointRead requires non-empty params.partitionKeys[] (each entry a 2-3 level array)");
+                }
+                if (pks.size() != 1 && pks.size() != ids.size()) {
+                    throw new IllegalArgumentException(
+                        "hpkPointRead partitionKeys length " + pks.size()
+                            + " must be 1 or match ids length " + ids.size());
+                }
+                for (int i = 0; i < pks.size(); i++) {
+                    Object entry = pks.get(i);
+                    if (!(entry instanceof List<?> levels)) {
+                        throw new IllegalArgumentException(
+                            "hpkPointRead partitionKeys[" + i + "] must be a 2- or 3-level array, "
+                                + "got " + (entry == null ? "null" : entry.getClass().getSimpleName())
+                                + " (use 'pointRead' for single-level keys)");
+                    }
+                    if (levels.size() < 2 || levels.size() > 3) {
+                        throw new IllegalArgumentException(
+                            "hpkPointRead partitionKeys[" + i + "] must have 2 or 3 levels, got " + levels.size());
+                    }
+                }
+            }
+            case "vectorSearch" -> {
+                if (!vectorSearchRunner.isReady()) {
+                    throw new IllegalArgumentException(
+                        "vectorSearch is unavailable: " + s.container() + " was not provisioned at startup "
+                            + "(see /_meta/diagnostics)");
+                }
+                if (!(p.get("seeds") instanceof List<?> seeds) || seeds.isEmpty()) {
+                    throw new IllegalArgumentException(
+                        "vectorSearch requires non-empty params.seeds[] (text strings hashed to query vectors)");
+                }
+                for (Object seed : seeds) {
+                    if (!(seed instanceof String str) || str.isBlank()) {
+                        throw new IllegalArgumentException(
+                            "vectorSearch params.seeds[] entries must be non-blank strings");
+                    }
+                }
+                Integer k = p.get("k") instanceof Number n ? n.intValue() : null;
+                if (k != null && (k < VECTOR_MIN_K || k > VECTOR_MAX_K)) {
+                    throw new IllegalArgumentException(
+                        "vectorSearch params.k must be in [" + VECTOR_MIN_K + ", " + VECTOR_MAX_K + "], got " + k);
+                }
+            }
+            case "bulk" -> {
+                String op = p.get("op") instanceof String str ? str : null;
+                if (op == null || !Set.of("create", "upsert", "replace", "delete").contains(op)) {
+                    throw new IllegalArgumentException(
+                        "bulk requires params.op in {create, upsert, replace, delete}, got " + op);
+                }
+                if ("replace".equals(op) || "delete".equals(op)) {
+                    // These need stable existing ids — synthesising new ids per tick would 404.
+                    // Use the standalone /bulk endpoint for those, not the workload runner.
+                    throw new IllegalArgumentException(
+                        "bulk workload op only supports {create, upsert} (got '" + op
+                            + "' — replace/delete need pre-existing ids; use POST /bulk directly).");
+                }
+                if (HPK_CONTAINERS.contains(s.container())) {
+                    // The runner synthesises docs with a single {pkField} field; HPK containers
+                    // require all 2-3 levels present on every doc, so a synthesised single-field
+                    // doc would 400 at Cosmos. Use POST /bulk directly for HPK writes.
+                    throw new IllegalArgumentException(
+                        "bulk workload op does not support hierarchical container " + s.container()
+                            + " (synthesised docs only carry one PK field). Use POST /bulk directly.");
+                }
+                if (p.get("partitionKey") == null) {
+                    throw new IllegalArgumentException(
+                        "bulk requires params.partitionKey (single value applied to every item in the batch)");
+                }
+                Integer batchSize = p.get("batchSize") instanceof Number n ? n.intValue() : null;
+                if (batchSize == null || batchSize < BULK_MIN_BATCH || batchSize > BULK_MAX_BATCH) {
+                    throw new IllegalArgumentException(
+                        "bulk params.batchSize must be in [" + BULK_MIN_BATCH + ", " + BULK_MAX_BATCH
+                            + "], got " + batchSize);
+                }
+                if (p.get("template") != null && !(p.get("template") instanceof Map<?, ?>)) {
+                    throw new IllegalArgumentException("bulk params.template must be an object");
+                }
+                if (p.get("pkField") != null && !(p.get("pkField") instanceof String)) {
+                    throw new IllegalArgumentException("bulk params.pkField must be a string");
                 }
             }
             default -> throw new IllegalStateException("unreachable: validated op " + s.op());
@@ -294,6 +444,10 @@ public class WorkloadEngine {
             case "pointRead" -> executePointRead(step);
             case "query" -> executeQuery(step);
             case "cartUpsert" -> executeCartUpsert(step);
+            case "pointUpsert" -> executePointUpsert(step);
+            case "hpkPointRead" -> executeHpkPointRead(step);
+            case "vectorSearch" -> executeVectorSearch(step);
+            case "bulk" -> executeBulk(step);
             default -> Mono.error(new IllegalStateException("unsupported op: " + step.op()));
         };
     }
@@ -380,6 +534,105 @@ public class WorkloadEngine {
         doc.put("customerId", customerId);
         doc.put("items", items);
         return doc;
+    }
+
+    private Mono<OpResult> executePointUpsert(WorkloadStep step) {
+        // partitionKeys / pkField validated as non-empty/non-blank in validateStepParams.
+        // Use List<?> + toString() so integer PK values don't ClassCastException at runtime
+        // — see Copilot review on PR1 (cast on Jackson-deserialised List<String> erased to
+        // Object at runtime).
+        @SuppressWarnings("unchecked")
+        List<?> rawPks = (List<?>) step.params().get("partitionKeys");
+        String pkField = (String) step.params().get("pkField");
+        Object pkRaw = rawPks.get(ThreadLocalRandom.current().nextInt(rawPks.size()));
+        PartitionKey pk = allowList.parseRequired(pkRaw);
+        String idPrefix = step.params().get("idPrefix") instanceof String s ? s : "wl-upsert-";
+        Map<String, Object> doc = synthesizeUpsertDoc(idPrefix, pkField, pkRaw, step.params().get("template"));
+        CosmosAsyncContainer container = database.getContainer(step.container());
+        return container.upsertItem(doc, pk, new CosmosItemRequestOptions())
+            .map(resp -> new OpResult(resp.getRequestCharge(), resp.getStatusCode()));
+    }
+
+    /**
+     * Build a synthesised doc for {@code pointUpsert}: {@code {id, [pkField]: pkValue, ...template}}.
+     * The id is fresh per call so each tick exercises the create-or-replace write path;
+     * {@code template} fills in container-specific fields (e.g. {@code price}, {@code name}
+     * for Products) that downstream readers may depend on.
+     */
+    private static Map<String, Object> synthesizeUpsertDoc(String idPrefix, String pkField, Object pkValue, Object template) {
+        Map<String, Object> doc = new LinkedHashMap<>();
+        doc.put("id", idPrefix + Long.toHexString(ThreadLocalRandom.current().nextLong()));
+        if (template instanceof Map<?, ?> rawTemplate) {
+            for (Map.Entry<?, ?> e : rawTemplate.entrySet()) {
+                if (e.getKey() instanceof String key) {
+                    doc.put(key, e.getValue());
+                }
+            }
+        }
+        // Set pkField LAST so it always reflects the chosen PK (caller-supplied template
+        // can't accidentally override it and route the write to the wrong partition).
+        doc.put(pkField, pkValue);
+        return doc;
+    }
+
+    private Mono<OpResult> executeHpkPointRead(WorkloadStep step) {
+        // ids + partitionKeys (list-of-lists) validated in validateStepParams.
+        @SuppressWarnings("unchecked")
+        List<?> rawIds = (List<?>) step.params().get("ids");
+        @SuppressWarnings("unchecked")
+        List<?> rawPks = (List<?>) step.params().get("partitionKeys");
+        int i = ThreadLocalRandom.current().nextInt(rawIds.size());
+        String id = rawIds.get(i).toString();
+        Object pkRaw = rawPks.size() == 1 ? rawPks.get(0) : rawPks.get(i);
+        // parseRequired handles List<Object> via PartitionKeyBuilder; 2-3 level arity
+        // already enforced by validator so a malformed pk here means a code bug.
+        PartitionKey pk = allowList.parseRequired(pkRaw);
+        CosmosAsyncContainer container = database.getContainer(step.container());
+        return container.readItem(id, pk, Object.class)
+            .map(resp -> new OpResult(resp.getRequestCharge(), resp.getStatusCode()));
+    }
+
+    private Mono<OpResult> executeVectorSearch(WorkloadStep step) {
+        // seeds validated as non-empty List<String> in validateStepParams.
+        @SuppressWarnings("unchecked")
+        List<?> rawSeeds = (List<?>) step.params().get("seeds");
+        String seed = (String) rawSeeds.get(ThreadLocalRandom.current().nextInt(rawSeeds.size()));
+        Integer k = step.params().get("k") instanceof Number n ? n.intValue() : null;
+        float[] vector = embeddingGenerator.embed(seed);
+        VectorSearchRequest req = new VectorSearchRequest(step.container(), vector, k);
+        return vectorSearchRunner.search(req)
+            .map(resp -> new OpResult(resp.requestCharge(), 200));
+    }
+
+    private Mono<OpResult> executeBulk(WorkloadStep step) {
+        // op + batchSize + partitionKey validated in validateStepParams.
+        Map<String, Object> p = step.params();
+        String op = (String) p.get("op");
+        int batchSize = ((Number) p.get("batchSize")).intValue();
+        Object pkRaw = p.get("partitionKey");
+        String idPrefix = p.get("idPrefix") instanceof String s ? s : "wl-bulk-";
+        // pkField is optional — when present, every synthesised doc has [pkField]: pkRaw
+        // so it materialises in the doc body (Cosmos requires PK fields to exist on writes).
+        // For hierarchical containers, pkField is required so HPK extraction works.
+        String pkField = p.get("pkField") instanceof String s ? s : null;
+        Object template = p.get("template");
+        List<BulkOperation> ops = new ArrayList<>(batchSize);
+        for (int i = 0; i < batchSize; i++) {
+            String id = idPrefix + Long.toHexString(ThreadLocalRandom.current().nextLong());
+            Map<String, Object> doc = pkField == null
+                ? Map.of("id", id)
+                : synthesizeUpsertDoc(idPrefix, pkField, pkRaw, template);
+            // Force the id we just generated onto the doc (synthesizeUpsertDoc picks its own).
+            doc = new LinkedHashMap<>(doc);
+            doc.put("id", id);
+            ops.add(new BulkOperation(op, pkRaw, doc, id));
+        }
+        BulkRequest req = new BulkRequest(step.container(), ops, null);
+        return bulkRunner.run(req)
+            // Status code is synthetic — bulk's per-item statuses are folded into requestCharge
+            // already; we surface 200 if the request completed (BulkRunner failure paths return
+            // Mono.error which executes the error counter in oneOp).
+            .map(resp -> new OpResult(resp.totalRequestCharge(), 200));
     }
 
     // ----- snapshot -----

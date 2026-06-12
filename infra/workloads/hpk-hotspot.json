@@ -9,10 +9,17 @@
       "container": "Orders",
       "weight": 100,
       "params": {
-        "ids": ["smoke-checkout-1-2026-06-1"],
-        "partitionKeys": [["smoke-checkout-1", "2026-06"]]
+        "ids": [
+          "smoke-checkout-1-2026-06-1",
+          "smoke-checkout-2-2026-06-1",
+          "smoke-checkout-3-2026-06-1"
+        ],
+        "partitionKeys": [
+          ["smoke-checkout-1", "2026-06"],
+          ["smoke-checkout-2", "2026-06"],
+          ["smoke-checkout-3", "2026-06"]
+        ]
       }
     }
-  ],
-  "_notes": "hpkPointRead lands in PR2; this preset is pre-seeded so the UI dropdown shows the future op."
+  ]
 }

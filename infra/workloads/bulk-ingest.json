@@ -8,8 +8,17 @@
       "op": "bulk",
       "container": "Inventory",
       "weight": 100,
-      "params": { "batchSize": 100 }
+      "params": {
+        "op": "upsert",
+        "partitionKey": "seller-001",
+        "batchSize": 20,
+        "pkField": "sellerId",
+        "idPrefix": "wl-bulk-inv-",
+        "template": {
+          "stockOnHand": 50,
+          "reorderPoint": 10
+        }
+      }
     }
-  ],
-  "_notes": "bulk lands in PR2; uses the existing BulkRunner."
+  ]
 }

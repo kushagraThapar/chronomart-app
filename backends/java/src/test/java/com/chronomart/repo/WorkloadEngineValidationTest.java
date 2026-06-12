@@ -17,13 +17,17 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * Offline validation tests for {@link WorkloadEngine#start(WorkloadSpec)}.
  *
  * <p>We never call {@code start()} here (that would require a live Cosmos handle). Instead
- * we directly drive the validation rules so PR1 has unit coverage of the user-facing 400
- * surface — the same rules will keep applying when PR2 adds more ops, and regressions in
- * the validator should fail loud and fast without a live emulator.
+ * we directly drive the validation rules so all 7 ops have unit coverage of the user-facing
+ * 400 surface — regressions in the validator fail loud and fast without a live emulator.
+ *
+ * <p>Tests cover both negative branches ({@code rejects...}) and at least one positive
+ * branch per op ({@code accepts...}) so a future refactor that tightens validation cannot
+ * silently break a currently-valid spec without flipping a positive test red.
  */
 class WorkloadEngineValidationTest {
 
     private WorkloadEngine engine;
+    private VectorSearchRunner vectorSearchRunner;
 
     @BeforeEach
     void setup() {
@@ -32,15 +36,20 @@ class WorkloadEngineValidationTest {
             ChronomartProperties.Containers.defaults(),
             null);
         ContainerAllowList allowList = new ContainerAllowList(props);
-        // We never call queryRunner.run() in validation, but the engine ctor calls
-        // queryRunner.allowedContainers() to assert wiring. A mock is fine.
         QueryRunner queryRunner = Mockito.mock(QueryRunner.class);
         Mockito.when(queryRunner.allowedContainers()).thenReturn(allowList.names());
+        BulkRunner bulkRunner = Mockito.mock(BulkRunner.class);
+        vectorSearchRunner = Mockito.mock(VectorSearchRunner.class);
+        Mockito.when(vectorSearchRunner.isReady()).thenReturn(true);
+        EmbeddingGenerator embeddingGenerator = Mockito.mock(EmbeddingGenerator.class);
         WorkloadRegistry registry = new WorkloadRegistry();
         engine = new WorkloadEngine(
             Mockito.mock(com.azure.cosmos.CosmosAsyncDatabase.class),
-            allowList, queryRunner, registry);
+            allowList, queryRunner, bulkRunner, vectorSearchRunner, embeddingGenerator,
+            registry);
     }
+
+    // ----- spec-level guards -----
 
     @Test
     void rejectsExcessiveConcurrency() {
@@ -80,14 +89,7 @@ class WorkloadEngineValidationTest {
             .hasMessageContaining("unknown op");
     }
 
-    @Test
-    void rejectsKnownButUnimplementedOpWithFriendlyMessage() {
-        WorkloadStep bulk = new WorkloadStep("bulk", "Inventory", 1, Map.of());
-        assertThatThrownBy(() -> engine.start(
-            new WorkloadSpec("future-op", 10, 1, 0, List.of(bulk))))
-            .isInstanceOf(IllegalArgumentException.class)
-            .hasMessageContaining("not yet implemented");
-    }
+    // ----- pointRead -----
 
     @Test
     void rejectsPointReadWithoutIds() {
@@ -111,6 +113,8 @@ class WorkloadEngineValidationTest {
             .hasMessageContaining("partitionKeys length");
     }
 
+    // ----- query -----
+
     @Test
     void rejectsQueryWithoutPartitionKeyOrCrossPartition() {
         WorkloadStep bad = new WorkloadStep("query", "Products", 1,
@@ -121,6 +125,8 @@ class WorkloadEngineValidationTest {
             .hasMessageContaining("partitionKey")
             .hasMessageContaining("enableCrossPartition");
     }
+
+    // ----- cartUpsert -----
 
     @Test
     void rejectsCartUpsertOnWrongContainer() {
@@ -139,6 +145,247 @@ class WorkloadEngineValidationTest {
             new WorkloadSpec("no-customer-ids", 10, 1, 0, List.of(bad))))
             .isInstanceOf(IllegalArgumentException.class)
             .hasMessageContaining("customerIds");
+    }
+
+    // ----- pointUpsert (NEW) -----
+
+    @Test
+    void rejectsPointUpsertWithoutPartitionKeys() {
+        WorkloadStep bad = new WorkloadStep("pointUpsert", "Products", 1,
+            Map.of("pkField", "sellerId"));
+        assertThatThrownBy(() -> engine.start(
+            new WorkloadSpec("no-pks", 10, 1, 0, List.of(bad))))
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessageContaining("partitionKeys");
+    }
+
+    @Test
+    void rejectsPointUpsertWithoutPkField() {
+        WorkloadStep bad = new WorkloadStep("pointUpsert", "Products", 1,
+            Map.of("partitionKeys", List.of("seller-001")));
+        assertThatThrownBy(() -> engine.start(
+            new WorkloadSpec("no-pk-field", 10, 1, 0, List.of(bad))))
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessageContaining("pkField");
+    }
+
+    @Test
+    void rejectsPointUpsertWithHierarchicalPartitionKey() {
+        WorkloadStep bad = new WorkloadStep("pointUpsert", "ProductsHpk", 1,
+            Map.of(
+                "partitionKeys", List.of(List.of("s1", "c1")),
+                "pkField", "sellerId"));
+        assertThatThrownBy(() -> engine.start(
+            new WorkloadSpec("hpk-via-pointUpsert", 10, 1, 0, List.of(bad))))
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessageContaining("hierarchical");
+    }
+
+    @Test
+    void acceptsValidPointUpsert() {
+        WorkloadStep good = new WorkloadStep("pointUpsert", "Products", 1,
+            Map.of(
+                "partitionKeys", List.of("seller-001", "seller-002"),
+                "pkField", "sellerId",
+                "template", Map.of("name", "synthesised", "price", 199.99)));
+        // Validation only — start() returns the runId synchronously; the async cosmos
+        // chain hits our mock database and counts NPEs as errors, but no exception
+        // escapes back to the caller. A non-null return == validation passed.
+        assertThat(engine.start(new WorkloadSpec("ok-upsert", 1, 1, 0, List.of(good))))
+            .isNotBlank();
+    }
+
+    // ----- hpkPointRead (NEW) -----
+
+    @Test
+    void rejectsHpkPointReadOnNonHierarchicalContainer() {
+        WorkloadStep bad = new WorkloadStep("hpkPointRead", "Products", 1,
+            Map.of(
+                "ids", List.of("prod-001"),
+                "partitionKeys", List.of(List.of("seller-001", "cat-a"))));
+        assertThatThrownBy(() -> engine.start(
+            new WorkloadSpec("wrong-container", 10, 1, 0, List.of(bad))))
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessageContaining("hierarchical container");
+    }
+
+    @Test
+    void rejectsHpkPointReadWithSingleLevelKey() {
+        WorkloadStep bad = new WorkloadStep("hpkPointRead", "ProductsHpk", 1,
+            Map.of(
+                "ids", List.of("prod-001"),
+                "partitionKeys", List.of("seller-001")));
+        assertThatThrownBy(() -> engine.start(
+            new WorkloadSpec("single-level", 10, 1, 0, List.of(bad))))
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessageContaining("2- or 3-level array");
+    }
+
+    @Test
+    void rejectsHpkPointReadWithWrongArity() {
+        WorkloadStep bad = new WorkloadStep("hpkPointRead", "ProductsHpk", 1,
+            Map.of(
+                "ids", List.of("prod-001"),
+                "partitionKeys", List.of(List.of("s1", "c1", "id1", "extra"))));
+        assertThatThrownBy(() -> engine.start(
+            new WorkloadSpec("arity-4", 10, 1, 0, List.of(bad))))
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessageContaining("2 or 3 levels");
+    }
+
+    @Test
+    void rejectsHpkPointReadWithMismatchedPkLength() {
+        WorkloadStep bad = new WorkloadStep("hpkPointRead", "ProductsHpk", 1,
+            Map.of(
+                "ids", List.of("a", "b", "c"),
+                "partitionKeys", List.of(
+                    List.of("s1", "c1"),
+                    List.of("s2", "c2"))));
+        assertThatThrownBy(() -> engine.start(
+            new WorkloadSpec("pk-mismatch", 10, 1, 0, List.of(bad))))
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessageContaining("partitionKeys length");
+    }
+
+    @Test
+    void acceptsValidHpkPointRead() {
+        WorkloadStep good = new WorkloadStep("hpkPointRead", "Orders", 1,
+            Map.of(
+                "ids", List.of("order-1", "order-2"),
+                "partitionKeys", List.of(
+                    List.of("cust-001", "2026-06"),
+                    List.of("cust-002", "2026-06"))));
+        assertThat(engine.start(new WorkloadSpec("ok-hpk", 1, 1, 0, List.of(good))))
+            .isNotBlank();
+    }
+
+    // ----- vectorSearch (NEW) -----
+
+    @Test
+    void rejectsVectorSearchWhenContainerNotReady() {
+        Mockito.when(vectorSearchRunner.isReady()).thenReturn(false);
+        WorkloadStep bad = new WorkloadStep("vectorSearch", "ProductVectors", 1,
+            Map.of("seeds", List.of("seed-1")));
+        assertThatThrownBy(() -> engine.start(
+            new WorkloadSpec("not-ready", 10, 1, 0, List.of(bad))))
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessageContaining("unavailable");
+    }
+
+    @Test
+    void rejectsVectorSearchWithoutSeeds() {
+        WorkloadStep bad = new WorkloadStep("vectorSearch", "ProductVectors", 1, Map.of());
+        assertThatThrownBy(() -> engine.start(
+            new WorkloadSpec("no-seeds", 10, 1, 0, List.of(bad))))
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessageContaining("seeds");
+    }
+
+    @Test
+    void rejectsVectorSearchWithBlankSeed() {
+        WorkloadStep bad = new WorkloadStep("vectorSearch", "ProductVectors", 1,
+            Map.of("seeds", List.of("ok", "   ")));
+        assertThatThrownBy(() -> engine.start(
+            new WorkloadSpec("blank-seed", 10, 1, 0, List.of(bad))))
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessageContaining("non-blank strings");
+    }
+
+    @Test
+    void rejectsVectorSearchWithKOutOfRange() {
+        WorkloadStep bad = new WorkloadStep("vectorSearch", "ProductVectors", 1,
+            Map.of("seeds", List.of("seed-1"), "k", 200));
+        assertThatThrownBy(() -> engine.start(
+            new WorkloadSpec("k-too-big", 10, 1, 0, List.of(bad))))
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessageContaining("k must be in");
+    }
+
+    @Test
+    void acceptsValidVectorSearch() {
+        WorkloadStep good = new WorkloadStep("vectorSearch", "ProductVectors", 1,
+            Map.of("seeds", List.of("watch", "vintage"), "k", 10));
+        assertThat(engine.start(new WorkloadSpec("ok-vec", 1, 1, 0, List.of(good))))
+            .isNotBlank();
+    }
+
+    // ----- bulk (NEW) -----
+
+    @Test
+    void rejectsBulkWithUnsupportedOp() {
+        WorkloadStep bad = new WorkloadStep("bulk", "Products", 1,
+            Map.of("op", "replace", "partitionKey", "seller-001", "batchSize", 5));
+        assertThatThrownBy(() -> engine.start(
+            new WorkloadSpec("replace-disallowed", 10, 1, 0, List.of(bad))))
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessageContaining("create, upsert");
+    }
+
+    @Test
+    void rejectsBulkWithUnknownOp() {
+        WorkloadStep bad = new WorkloadStep("bulk", "Products", 1,
+            Map.of("op", "destroy", "partitionKey", "seller-001", "batchSize", 5));
+        assertThatThrownBy(() -> engine.start(
+            new WorkloadSpec("destroy-op", 10, 1, 0, List.of(bad))))
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessageContaining("create, upsert, replace, delete");
+    }
+
+    @Test
+    void rejectsBulkWithoutPartitionKey() {
+        WorkloadStep bad = new WorkloadStep("bulk", "Products", 1,
+            Map.of("op", "upsert", "batchSize", 5));
+        assertThatThrownBy(() -> engine.start(
+            new WorkloadSpec("no-pk", 10, 1, 0, List.of(bad))))
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessageContaining("partitionKey");
+    }
+
+    @Test
+    void rejectsBulkWithMissingBatchSize() {
+        WorkloadStep bad = new WorkloadStep("bulk", "Products", 1,
+            Map.of("op", "upsert", "partitionKey", "seller-001"));
+        assertThatThrownBy(() -> engine.start(
+            new WorkloadSpec("no-batch", 10, 1, 0, List.of(bad))))
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessageContaining("batchSize");
+    }
+
+    @Test
+    void rejectsBulkWithBatchSizeOverLimit() {
+        WorkloadStep bad = new WorkloadStep("bulk", "Products", 1,
+            Map.of("op", "upsert", "partitionKey", "seller-001", "batchSize", 1000));
+        assertThatThrownBy(() -> engine.start(
+            new WorkloadSpec("too-big", 10, 1, 0, List.of(bad))))
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessageContaining("batchSize must be in");
+    }
+
+    @Test
+    void rejectsBulkAgainstHpkContainer() {
+        WorkloadStep bad = new WorkloadStep("bulk", "Orders", 1,
+            Map.of(
+                "op", "upsert",
+                "partitionKey", List.of("cust-001", "2026-06"),
+                "batchSize", 10,
+                "pkField", "customerId"));
+        assertThatThrownBy(() -> engine.start(
+            new WorkloadSpec("bulk-vs-hpk", 10, 1, 0, List.of(bad))))
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessageContaining("hierarchical container");
+    }
+
+    @Test
+    void acceptsValidBulkUpsert() {
+        WorkloadStep good = new WorkloadStep("bulk", "Products", 1,
+            Map.of(
+                "op", "upsert",
+                "partitionKey", "seller-001",
+                "batchSize", 10,
+                "pkField", "sellerId",
+                "template", Map.of("name", "bulk-synth")));
+        assertThat(engine.start(new WorkloadSpec("ok-bulk", 1, 1, 0, List.of(good))))
+            .isNotBlank();
     }
 
     private static WorkloadStep validPointReadStep() {
