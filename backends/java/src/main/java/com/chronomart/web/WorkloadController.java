@@ -5,6 +5,8 @@ import com.chronomart.web.dto.WorkloadAnomaly;
 import com.chronomart.web.dto.WorkloadProgress;
 import com.chronomart.web.dto.WorkloadSpec;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.validation.annotation.Validated;
@@ -74,11 +76,9 @@ public class WorkloadController {
     @GetMapping("/{runId}/anomalies")
     public ResponseEntity<List<WorkloadAnomaly>> anomalies(
             @PathVariable String runId,
-            @RequestParam(defaultValue = "0") int offset,
-            @RequestParam(defaultValue = "100") int limit) {
-        int safeOffset = Math.max(0, offset);
-        int safeLimit = Math.min(Math.max(1, limit), MAX_ANOMALY_PAGE);
-        List<WorkloadAnomaly> page = engine.anomalies(runId, safeOffset, safeLimit);
+            @RequestParam(defaultValue = "0") @Min(0) int offset,
+            @RequestParam(defaultValue = "100") @Min(1) @Max(MAX_ANOMALY_PAGE) int limit) {
+        List<WorkloadAnomaly> page = engine.anomalies(runId, offset, limit);
         return page == null ? ResponseEntity.notFound().build() : ResponseEntity.ok(page);
     }
 

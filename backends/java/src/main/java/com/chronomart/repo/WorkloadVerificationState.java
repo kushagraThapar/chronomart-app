@@ -120,9 +120,11 @@ final class WorkloadVerificationState {
             anomalyErrors.incrementAndGet();
         }
         byCode.computeIfAbsent(a.code(), c -> new AtomicLong(0)).incrementAndGet();
-        if (retainedCount.get() < MAX_RETAINED_ANOMALIES) {
+        // Use getAndIncrement() so the check-and-reserve is a single atomic step; a plain
+        // get()+incrementAndGet() pair has a TOCTOU window where concurrent threads both pass
+        // the guard and overfill the buffer.
+        if (retainedCount.getAndIncrement() < MAX_RETAINED_ANOMALIES) {
             retained.add(a);
-            retainedCount.incrementAndGet();
         }
     }
 
