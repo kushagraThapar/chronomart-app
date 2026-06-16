@@ -1,0 +1,25 @@
+{
+  "name": "verify-register",
+  "durationSeconds": 20,
+  "concurrency": 8,
+  "rampSeconds": 0,
+  "steps": [
+    {
+      "op": "pointUpsert",
+      "container": "Inventory",
+      "weight": 50,
+      "params": { "pkField": "sellerId" }
+    },
+    {
+      "op": "pointRead",
+      "container": "Inventory",
+      "weight": 50,
+      "params": {}
+    }
+  ],
+  "verification": {
+    "enabled": true,
+    "level": "session",
+    "keyspace": { "prefix": "wlverify", "size": 500 }
+  }
+}

@@ -592,7 +592,30 @@ paths:
               schema: { $ref: '#/components/schemas/WorkloadRunStatus' }
         "404": { $ref: '#/components/responses/NotFound' }
 
-components:
+  /workloads/{runId}/anomalies:
+    parameters:
+      - { in: path, name: runId, required: true, schema: { type: string } }
+      - { in: query, name: offset, schema: { type: integer, minimum: 0, default: 0 } }
+      - { in: query, name: limit,  schema: { type: integer, minimum: 1, maximum: 500, default: 100 } }
+    get:
+      operationId: getWorkloadAnomalies
+      tags: [workloads]
+      summary: Paged correctness anomalies for a verification run
+      description: >
+        Returns the anomalies the oracle recorded for the run, in detection order. An empty array
+        means the run is known but had verification disabled (or found nothing); 404 means the run
+        is unknown / has aged out of the registry.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/WorkloadAnomaly' }
+        "404": { $ref: '#/components/responses/NotFound' }
+
+
   parameters:
     PageSize:
       in: query
@@ -1067,6 +1090,77 @@ components:
           type: object
           additionalProperties: true
         durationSeconds: { type: integer }
+        verification: { $ref: '#/components/schemas/WorkloadVerification' }
+
+    WorkloadVerification:
+      type: object
+      description: >
+        Opt-in correctness-oracle config. When enabled the run operates over an owned, bounded
+        keyspace and every read/write is checked; absent or enabled=false runs as a pure-perf run.
+      properties:
+        enabled: { type: boolean, default: false }
+        level:
+          type: string
+          enum: [session, strong, bounded, eventual]
+          default: session
+          description: Consistency level the oracle asserts against.
+        stalenessWindowMs: { type: integer, minimum: 0, default: 5000 }
+        keyspace:
+          type: object
+          properties:
+            prefix: { type: string, default: wl }
+            size: { type: integer, minimum: 1, maximum: 1000000, default: 1000 }
+        sampleRate:
+          type: number
+          minimum: 0
+          maximum: 1
+          default: 1
+          description: Fraction of ops verified live — a perf escape hatch.
+        historyCap: { type: integer, minimum: 1, default: 1000000 }
+        failThreshold:
+          type: integer
+          minimum: 0
+          default: 0
+          description: CI gate — a run with more than this many ERROR anomalies fails.
+        seed:
+          type: integer
+          format: int64
+          description: RNG seed so a run's op-mix + keys replay deterministically.
+
+    WorkloadAnomaly:
+      type: object
+      required: [code, severity, op, container, opSeqGlobal, atEpochMillis]
+      description: A 2xx response that is nevertheless wrong — the class of bug the oracle exists to surface.
+      properties:
+        code:
+          type: string
+          description: >
+            Machine-readable category, e.g. WRONG_ID, CHECKSUM_MISMATCH, FIELD_MISMATCH,
+            PREDICATE_VIOLATION, VECTOR_ORDER_VIOLATION, UNEXPECTED_NOT_FOUND (and, in later
+            slices, STALE_READ, LOST_WRITE, PHANTOM_READ, MONOTONIC_READ_VIOLATION).
+        severity: { type: string, enum: [ERROR, WARN] }
+        op: { type: string }
+        container: { type: string }
+        key: { type: string }
+        detail: { type: string }
+        opSeqGlobal: { type: integer, format: int64 }
+        observedSeq: { type: ['integer', 'null'], format: int64 }
+        expectedSeq: { type: ['integer', 'null'], format: int64 }
+        atEpochMillis: { type: integer, format: int64 }
+
+    AnomalySummary:
+      type: object
+      required: [total, errorCount, warnCount]
+      properties:
+        total: { type: integer, format: int64 }
+        errorCount: { type: integer, format: int64 }
+        warnCount: { type: integer, format: int64 }
+        byCode:
+          type: object
+          additionalProperties: { type: integer, format: int64 }
+        samples:
+          type: array
+          items: { $ref: '#/components/schemas/WorkloadAnomaly' }
 
     WorkloadRunHandle:
       type: object
@@ -1084,6 +1178,8 @@ components:
         status: { type: string, enum: [running, completed, failed, cancelled] }
         startedAt: { type: string, format: date-time }
         completedAt: { type: ['string', 'null'], format: date-time }
+        verificationLevel: { type: ['string', 'null'] }
+        anomalySummary: { $ref: '#/components/schemas/AnomalySummary' }
         steps:
           type: array
           items:
