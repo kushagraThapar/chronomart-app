@@ -826,7 +826,7 @@ components:
         # checkout can pre-fill the order line without a second product lookup. Optional:
         # items added by hand (harness Cart page) or by older clients omit them.
         sellerId: { type: string }
-        unitPriceUsd: { type: number }
+        unitPriceUsd: { type: number, minimum: 0 }
 
     Cart:
       type: object
