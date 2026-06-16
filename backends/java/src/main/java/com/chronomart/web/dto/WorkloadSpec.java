@@ -34,6 +34,12 @@ public record WorkloadSpec(
     @Min(1) @Max(1800) int durationSeconds,
     @Min(1) @Max(64) int concurrency,
     @Min(0) @Max(60) Integer rampSeconds,
-    @NotEmpty @Valid List<WorkloadStep> steps
+    @NotEmpty @Valid List<WorkloadStep> steps,
+    @Valid WorkloadVerification verification
 ) {
+    /** Back-compat convenience for callers (and tests) that predate the verification block. */
+    public WorkloadSpec(String name, int durationSeconds, int concurrency,
+                        Integer rampSeconds, List<WorkloadStep> steps) {
+        this(name, durationSeconds, concurrency, rampSeconds, steps, null);
+    }
 }

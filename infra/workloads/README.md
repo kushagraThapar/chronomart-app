@@ -11,6 +11,18 @@ JSON presets for `POST /api/v1/workloads/run`. Load the file contents as the req
 | `vector-throughput.json` | 100% `vectorSearch` against `ProductVectors` (seeded at startup); 5 deterministic query vectors, k=5. 8 users, 30s. |
 | `bulk-ingest.json` | 100% `bulk` upsert against `Inventory` — 20 docs/batch via `BulkRunner`, single PK (`seller-001`). 4 users, 30s. |
 | `hpk-hotspot.json` | 100% `hpkPointRead` against `Orders` (3-level HPK). **Pre-req:** drive the checkout flow first (`/checkout` from `/cart`) so the smoke order ids exist; otherwise every read is a 404 and the workload measures cache-miss + 404 latency only. 16 users, 30s. |
+| `verify-register.json` | **Correctness oracle** — 50/50 `pointUpsert`/`pointRead` over an owned 500-key keyspace on `Inventory`, `verification.enabled=true`. The engine pre-seeds the keyspace with self-verifying values, then every read is L0-checked (wrong-id / checksum / field / not-found). Poll `GET /workloads/{runId}/anomalies`; a healthy run reports `anomalySummary.total=0`. 8 users, 20s. |
+
+## Correctness verification (oracle)
+
+A run with a `verification` block operates over a bounded, engine-owned keyspace so reads and
+writes collide and every response can be checked. Each write embeds a self-verifying value
+(`_verify` envelope + deterministic fields); each read/query is checked with no cross-op state in
+this slice (L0): `WRONG_ID`, `CHECKSUM_MISMATCH`, `FIELD_MISMATCH`, `PREDICATE_VIOLATION`,
+`VECTOR_ORDER_VIOLATION`, `UNEXPECTED_NOT_FOUND`. Anomalies are summarised on the run status
+(`anomalySummary`) and paged via `GET /workloads/{runId}/anomalies`. Temporal checks
+(read-your-writes / stale / lost / phantom, per `level`) land in the next slice.
+
 
 ## Op coverage
 

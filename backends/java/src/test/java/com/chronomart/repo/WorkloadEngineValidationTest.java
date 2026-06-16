@@ -42,11 +42,12 @@ class WorkloadEngineValidationTest {
         vectorSearchRunner = Mockito.mock(VectorSearchRunner.class);
         Mockito.when(vectorSearchRunner.isReady()).thenReturn(true);
         EmbeddingGenerator embeddingGenerator = Mockito.mock(EmbeddingGenerator.class);
+        WorkloadVerifier verifier = new WorkloadVerifier();
         WorkloadRegistry registry = new WorkloadRegistry();
         engine = new WorkloadEngine(
             Mockito.mock(com.azure.cosmos.CosmosAsyncDatabase.class),
             allowList, queryRunner, bulkRunner, vectorSearchRunner, embeddingGenerator,
-            registry);
+            verifier, registry);
     }
 
     // ----- spec-level guards -----

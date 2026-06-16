@@ -5,10 +5,12 @@ import com.azure.cosmos.CosmosAsyncDatabase;
 import com.azure.cosmos.CosmosException;
 import com.azure.cosmos.models.CosmosItemRequestOptions;
 import com.azure.cosmos.models.PartitionKey;
+import com.chronomart.web.dto.AnomalySummary;
 import com.chronomart.web.dto.BulkOperation;
 import com.chronomart.web.dto.BulkRequest;
 import com.chronomart.web.dto.QueryRequest;
 import com.chronomart.web.dto.VectorSearchRequest;
+import com.chronomart.web.dto.WorkloadAnomaly;
 import com.chronomart.web.dto.WorkloadOpStats;
 import com.chronomart.web.dto.WorkloadProgress;
 import com.chronomart.web.dto.WorkloadSpec;
@@ -132,12 +134,18 @@ public class WorkloadEngine {
     private static final long HISTOGRAM_MAX_NANOS = Duration.ofHours(1).toNanos();
     private static final int HISTOGRAM_SIGNIFICANT_DIGITS = 3;
 
+    /** Max anomaly samples inlined into the progress payload; the full list pages via the endpoint. */
+    private static final int MAX_SUMMARY_SAMPLES = 20;
+    /** Concurrency used to pre-seed the owned keyspace before a verification run starts. */
+    private static final int PRESEED_CONCURRENCY = 16;
+
     private final CosmosAsyncDatabase database;
     private final ContainerAllowList allowList;
     private final QueryRunner queryRunner;
     private final BulkRunner bulkRunner;
     private final VectorSearchRunner vectorSearchRunner;
     private final EmbeddingGenerator embeddingGenerator;
+    private final WorkloadVerifier verifier;
     private final WorkloadRegistry registry;
 
     private final ScheduledExecutorService snapshotter =
@@ -153,6 +161,7 @@ public class WorkloadEngine {
                           BulkRunner bulkRunner,
                           VectorSearchRunner vectorSearchRunner,
                           EmbeddingGenerator embeddingGenerator,
+                          WorkloadVerifier verifier,
                           WorkloadRegistry registry) {
         this.database = database;
         this.allowList = allowList;
@@ -160,6 +169,7 @@ public class WorkloadEngine {
         this.bulkRunner = bulkRunner;
         this.vectorSearchRunner = vectorSearchRunner;
         this.embeddingGenerator = embeddingGenerator;
+        this.verifier = verifier;
         // Eagerly verify the allow-list is non-empty so a misconfigured bean fails fast
         // at startup rather than at the first workload run.
         if (this.queryRunner.allowedContainers().isEmpty()) {
@@ -176,9 +186,16 @@ public class WorkloadEngine {
     public String start(WorkloadSpec spec) {
         validate(spec);
         String runId = "run-" + UUID.randomUUID().toString().substring(0, 8);
-        WorkloadRunState state = new WorkloadRunState(runId, spec, Instant.now());
+        WorkloadVerificationState vstate =
+            (spec.verification() != null && spec.verification().isEnabled())
+                ? new WorkloadVerificationState(runId, spec.verification())
+                : null;
+        WorkloadRunState state = new WorkloadRunState(runId, spec, Instant.now(), vstate);
         registry.register(state);
-        Mono<Void> driver = driveRun(state)
+        // A verification run pre-seeds its owned keyspace (one verified write per key) so reads
+        // have data to check from the first tick; a 404 thereafter is real signal, not warm-up.
+        Mono<Void> preSeed = vstate == null ? Mono.empty() : preSeedKeyspace(state, vstate);
+        Mono<Void> driver = preSeed.then(driveRun(state))
             .doOnSuccess(v -> finalize(state, "COMPLETED", null))
             .doOnError(e -> finalize(state, "FAILED", e.getMessage()))
             .onErrorResume(e -> Mono.empty());
@@ -189,6 +206,14 @@ public class WorkloadEngine {
         // Fire-and-forget on bounded-elastic so we don't tie up the snapshotter thread.
         driver.subscribeOn(Schedulers.boundedElastic()).subscribe();
         return runId;
+    }
+
+    /** Paged anomalies for a verification run. Returns {@code null} when the run is unknown, an
+     *  empty list when the run had verification disabled or recorded nothing. */
+    public List<WorkloadAnomaly> anomalies(String runId, int offset, int limit) {
+        WorkloadRunState state = registry.get(runId);
+        if (state == null) return null;
+        return state.vstate == null ? List.of() : state.vstate.anomalies(offset, limit);
     }
 
     /** Cooperative stop. The run won't issue new ops once observed; in-flight ops
@@ -221,6 +246,7 @@ public class WorkloadEngine {
         if (spec.steps().size() > 32) {
             throw new IllegalArgumentException("at most 32 steps per workload (got " + spec.steps().size() + ")");
         }
+        boolean verifying = spec.verification() != null && spec.verification().isEnabled();
         Set<String> stepKeys = new HashSet<>();
         for (WorkloadStep s : spec.steps()) {
             allowList.requireAllowed(s.container());
@@ -233,14 +259,17 @@ public class WorkloadEngine {
                 throw new IllegalArgumentException(
                     "unknown op '" + s.op() + "'. Known: " + KNOWN_OPS);
             }
-            validateStepParams(s);
+            validateStepParams(s, verifying);
         }
     }
 
-    private void validateStepParams(WorkloadStep s) {
+    private void validateStepParams(WorkloadStep s, boolean verifying) {
         Map<String, Object> p = s.params() == null ? Map.of() : s.params();
         switch (s.op()) {
             case "pointRead" -> {
+                // In verification mode the engine draws keys + partition keys from the owned
+                // keyspace, so caller-supplied ids/partitionKeys are not required.
+                if (verifying) break;
                 if (!(p.get("ids") instanceof List<?> ids) || ids.isEmpty()) {
                     throw new IllegalArgumentException("pointRead requires non-empty params.ids[]");
                 }
@@ -276,22 +305,27 @@ public class WorkloadEngine {
                 }
             }
             case "pointUpsert" -> {
-                if (!(p.get("partitionKeys") instanceof List<?> pks) || pks.isEmpty()) {
-                    throw new IllegalArgumentException("pointUpsert requires non-empty params.partitionKeys[]");
-                }
+                // pkField (the doc field holding the partition key) is always required; in
+                // verification mode the engine supplies the pk *values* from the owned keyspace,
+                // so caller partitionKeys are not required.
                 if (!(p.get("pkField") instanceof String pkField) || pkField.isBlank()) {
                     throw new IllegalArgumentException(
                         "pointUpsert requires params.pkField (the field name on the synthesised doc "
                             + "that holds the partition key value, e.g. 'sellerId' for Products)");
                 }
-                // Reject hierarchical PK shapes here — pointUpsert sets a single field, so
-                // a list-of-lists PK couldn't be reflected onto the doc without invented
-                // schema. Use the bulk op for HPK writes.
-                for (Object pk : pks) {
-                    if (pk instanceof List<?>) {
-                        throw new IllegalArgumentException(
-                            "pointUpsert does not support hierarchical partition keys "
-                                + "(level " + pkField + " is single-field). Use 'bulk' for HPK writes.");
+                if (!verifying) {
+                    if (!(p.get("partitionKeys") instanceof List<?> pks) || pks.isEmpty()) {
+                        throw new IllegalArgumentException("pointUpsert requires non-empty params.partitionKeys[]");
+                    }
+                    // Reject hierarchical PK shapes here — pointUpsert sets a single field, so
+                    // a list-of-lists PK couldn't be reflected onto the doc without invented
+                    // schema. Use the bulk op for HPK writes.
+                    for (Object pk : pks) {
+                        if (pk instanceof List<?>) {
+                            throw new IllegalArgumentException(
+                                "pointUpsert does not support hierarchical partition keys "
+                                    + "(level " + pkField + " is single-field). Use 'bulk' for HPK writes.");
+                        }
                     }
                 }
                 if (p.get("template") != null && !(p.get("template") instanceof Map<?, ?>)) {
@@ -396,25 +430,54 @@ public class WorkloadEngine {
 
     // ----- run driver -----
 
+    /**
+     * Pre-seed the owned keyspace: one verified write per key, so a verification run's reads have
+     * data from the first tick. Container + pk-field are taken from the run's {@code pointUpsert}
+     * step; with no write step there is nothing to seed (reads will surface UNEXPECTED_NOT_FOUND,
+     * which is itself signal). Best-effort — individual seed failures are swallowed so a flaky
+     * key doesn't abort the run.
+     */
+    private Mono<Void> preSeedKeyspace(WorkloadRunState state, WorkloadVerificationState vstate) {
+        WorkloadStep writeStep = state.spec.steps().stream()
+            .filter(s -> "pointUpsert".equals(s.op()))
+            .findFirst().orElse(null);
+        if (writeStep == null) return Mono.empty();
+        String container = writeStep.container();
+        String pkField = (String) writeStep.params().get("pkField");
+        @SuppressWarnings("unchecked")
+        Map<String, Object> template = writeStep.params().get("template") instanceof Map<?, ?> m
+            ? (Map<String, Object>) m : null;
+        CosmosAsyncContainer c = database.getContainer(container);
+        return Flux.range(0, vstate.keyspaceSize())
+            .flatMap(i -> {
+                String key = vstate.keyAt(i);
+                String pkValue = vstate.pkValueFor(key);
+                Map<String, Object> doc = verifier.buildWriteDoc(vstate, container, key, pkField, pkValue, -1, template);
+                return c.upsertItem(doc, new PartitionKey(pkValue), new CosmosItemRequestOptions())
+                    .onErrorResume(e -> Mono.empty());
+            }, PRESEED_CONCURRENCY)
+            .then();
+    }
+
     private Mono<Void> driveRun(WorkloadRunState state) {
         long deadlineNanos = System.nanoTime() + Duration.ofSeconds(state.spec.durationSeconds()).toNanos();
         state.status = "RUNNING";
         return Flux.range(0, state.spec.concurrency())
-            .flatMap(i -> userLoop(state, deadlineNanos), state.spec.concurrency())
+            .flatMap(i -> userLoop(state, i, deadlineNanos), state.spec.concurrency())
             .then();
     }
 
-    private Mono<Void> userLoop(WorkloadRunState state, long deadlineNanos) {
-        return Mono.defer(() -> oneOp(state))
+    private Mono<Void> userLoop(WorkloadRunState state, int userIdx, long deadlineNanos) {
+        return Mono.defer(() -> oneOp(state, userIdx))
             .repeat(() -> System.nanoTime() < deadlineNanos && !state.stopRequested.get())
             .then();
     }
 
-    private Mono<Void> oneOp(WorkloadRunState state) {
+    private Mono<Void> oneOp(WorkloadRunState state, int userIdx) {
         WorkloadStep step = pickStep(state.spec.steps(), state.totalWeight);
         StepStats stats = state.statsByStep.get(stepKey(step));
         long start = System.nanoTime();
-        return execute(step)
+        return execute(step, state, userIdx)
             .doOnNext(result -> stats.recordSuccess(System.nanoTime() - start, result.requestCharge()))
             .onErrorResume(e -> {
                 stats.recordError(System.nanoTime() - start);
@@ -439,12 +502,12 @@ public class WorkloadEngine {
 
     // ----- op dispatch -----
 
-    private Mono<OpResult> execute(WorkloadStep step) {
+    private Mono<OpResult> execute(WorkloadStep step, WorkloadRunState state, int userIdx) {
         return switch (step.op()) {
-            case "pointRead" -> executePointRead(step);
+            case "pointRead" -> executePointRead(step, state);
             case "query" -> executeQuery(step);
             case "cartUpsert" -> executeCartUpsert(step);
-            case "pointUpsert" -> executePointUpsert(step);
+            case "pointUpsert" -> executePointUpsert(step, state, userIdx);
             case "hpkPointRead" -> executeHpkPointRead(step);
             case "vectorSearch" -> executeVectorSearch(step);
             case "bulk" -> executeBulk(step);
@@ -452,7 +515,31 @@ public class WorkloadEngine {
         };
     }
 
-    private Mono<OpResult> executePointRead(WorkloadStep step) {
+    private Mono<OpResult> executePointRead(WorkloadStep step, WorkloadRunState state) {
+        WorkloadVerificationState v = state.vstate;
+        if (v != null) {
+            // Verification mode: draw a key (and its deterministic pk) from the owned keyspace and
+            // L0-check whatever comes back. A 404 is reported to the verifier (not thrown) so it
+            // becomes an anomaly rather than an SDK error.
+            String key = v.randomKey();
+            String pkValue = v.pkValueFor(key);
+            PartitionKey pk = new PartitionKey(pkValue);
+            CosmosAsyncContainer container = database.getContainer(step.container());
+            return container.readItem(key, pk, Map.class)
+                .map(resp -> {
+                    @SuppressWarnings("unchecked")
+                    Map<String, Object> doc = (Map<String, Object>) resp.getItem();
+                    verifier.verifyPointRead(v, "pointRead", step.container(), key, doc);
+                    return new OpResult(resp.getRequestCharge(), resp.getStatusCode());
+                })
+                .onErrorResume(CosmosException.class, e -> {
+                    if (e.getStatusCode() == 404) {
+                        verifier.verifyPointRead(v, "pointRead", step.container(), key, null);
+                        return Mono.just(new OpResult(e.getRequestCharge(), 404));
+                    }
+                    return Mono.error(e);
+                });
+        }
         // ids is validated as List<?> in validateStepParams; elements may be any JSON scalar.
         // Use toString() so integer IDs like [1,2,3] don't ClassCastException at runtime.
         @SuppressWarnings("unchecked")
@@ -536,7 +623,22 @@ public class WorkloadEngine {
         return doc;
     }
 
-    private Mono<OpResult> executePointUpsert(WorkloadStep step) {
+    private Mono<OpResult> executePointUpsert(WorkloadStep step, WorkloadRunState state, int userIdx) {
+        WorkloadVerificationState v = state.vstate;
+        if (v != null) {
+            // Verification mode: pick a keyspace key, write a self-verifying value at the key's
+            // next sequence, using the deterministic pk so reads address the same partition.
+            String pkField = (String) step.params().get("pkField");
+            String key = v.randomKey();
+            String pkValue = v.pkValueFor(key);
+            @SuppressWarnings("unchecked")
+            Map<String, Object> template = step.params().get("template") instanceof Map<?, ?> m
+                ? (Map<String, Object>) m : null;
+            Map<String, Object> doc = verifier.buildWriteDoc(v, step.container(), key, pkField, pkValue, userIdx, template);
+            CosmosAsyncContainer container = database.getContainer(step.container());
+            return container.upsertItem(doc, new PartitionKey(pkValue), new CosmosItemRequestOptions())
+                .map(resp -> new OpResult(resp.getRequestCharge(), resp.getStatusCode()));
+        }
         // partitionKeys / pkField validated as non-empty/non-blank in validateStepParams.
         // Use List<?> + toString() so integer PK values don't ClassCastException at runtime
         // — see Copilot review on PR1 (cast on Jackson-deserialised List<String> erased to
@@ -712,6 +814,8 @@ public class WorkloadEngine {
         final Instant startedAt;
         final long startNanos;
         final int totalWeight;
+        /** Per-run oracle state; {@code null} when the run has verification disabled. */
+        final WorkloadVerificationState vstate;
         final Map<String, StepStats> statsByStep = new LinkedHashMap<>();
         final List<WorkloadTimePoint> timeSeries = Collections.synchronizedList(new ArrayList<>());
         final AtomicBoolean stopRequested = new AtomicBoolean(false);
@@ -721,11 +825,12 @@ public class WorkloadEngine {
         volatile String errorMessage;
         volatile ScheduledFuture<?> snapshotTask;
 
-        WorkloadRunState(String runId, WorkloadSpec spec, Instant startedAt) {
+        WorkloadRunState(String runId, WorkloadSpec spec, Instant startedAt, WorkloadVerificationState vstate) {
             this.runId = runId;
             this.spec = spec;
             this.startedAt = startedAt;
             this.startNanos = System.nanoTime();
+            this.vstate = vstate;
             int sum = 0;
             for (WorkloadStep s : spec.steps()) {
                 sum += s.weight();
@@ -763,10 +868,13 @@ public class WorkloadEngine {
             WorkloadOpStats overall = new WorkloadOpStats(
                 "*", "*", totalCount, totalErrs, totalRu, opsPerSec, ruPerSec,
                 meanMs, p50, p95, p99, maxMs);
+            String verificationLevel = vstate == null ? null : vstate.level();
+            AnomalySummary anomalySummary = vstate == null ? null : vstate.summary(MAX_SUMMARY_SAMPLES);
             return new WorkloadProgress(
                 runId, spec.name(), status, startedAt, end, elapsedSec,
                 spec.durationSeconds(), spec.concurrency(),
-                overall, byStep, new ArrayList<>(timeSeries), errorMessage);
+                overall, byStep, new ArrayList<>(timeSeries), errorMessage,
+                verificationLevel, anomalySummary);
         }
     }
 

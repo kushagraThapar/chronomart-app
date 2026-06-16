@@ -30,6 +30,8 @@ public record WorkloadProgress(
     WorkloadOpStats overall,
     List<WorkloadOpStats> byStep,
     List<WorkloadTimePoint> timeSeries,
-    String errorMessage
+    String errorMessage,
+    String verificationLevel,
+    AnomalySummary anomalySummary
 ) {
 }
