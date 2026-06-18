@@ -452,9 +452,15 @@ public class WorkloadEngine {
             .flatMap(i -> {
                 String key = vstate.keyAt(i);
                 String pkValue = vstate.pkValueFor(key);
+                // writer=-1: a system seed, not any virtual user's session write.
                 Map<String, Object> doc = verifier.buildWriteDoc(vstate, container, key, pkField, pkValue, -1, template);
+                long seq = VerifiedValue.seqOf(doc);
                 return c.upsertItem(doc, new PartitionKey(pkValue), new CosmosItemRequestOptions())
-                    .onErrorResume(e -> Mono.empty());
+                    .doOnSuccess(r -> vstate.ackWrite(container, key, seq))
+                    .onErrorResume(e -> {
+                        vstate.failWrite(container, key, seq);
+                        return Mono.empty();
+                    });
             }, PRESEED_CONCURRENCY)
             .then();
     }
@@ -504,7 +510,7 @@ public class WorkloadEngine {
 
     private Mono<OpResult> execute(WorkloadStep step, WorkloadRunState state, int userIdx) {
         return switch (step.op()) {
-            case "pointRead" -> executePointRead(step, state);
+            case "pointRead" -> executePointRead(step, state, userIdx);
             case "query" -> executeQuery(step);
             case "cartUpsert" -> executeCartUpsert(step);
             case "pointUpsert" -> executePointUpsert(step, state, userIdx);
@@ -515,26 +521,30 @@ public class WorkloadEngine {
         };
     }
 
-    private Mono<OpResult> executePointRead(WorkloadStep step, WorkloadRunState state) {
+    private Mono<OpResult> executePointRead(WorkloadStep step, WorkloadRunState state, int userIdx) {
         WorkloadVerificationState v = state.vstate;
         if (v != null) {
             // Verification mode: draw a key (and its deterministic pk) from the owned keyspace and
-            // L0-check whatever comes back. A 404 is reported to the verifier (not thrown) so it
-            // becomes an anomaly rather than an SDK error.
+            // check whatever comes back (L0 self-consistency + L1 temporal). A 404 is reported to
+            // the verifier (not thrown) so it becomes an anomaly rather than an SDK error.
             String key = v.randomKey();
             String pkValue = v.pkValueFor(key);
+            // Capture the linearizable lower bound BEFORE issuing the read: the highest *settled*
+            // (non-concurrent, unambiguously-ordered) committed seq. A strong read must not return
+            // an older value; using settledSeq avoids false positives from concurrent same-key writes.
+            long settledFloorAtStart = v.settledSeq(step.container(), key);
             PartitionKey pk = new PartitionKey(pkValue);
             CosmosAsyncContainer container = database.getContainer(step.container());
             return container.readItem(key, pk, Map.class)
                 .map(resp -> {
                     @SuppressWarnings("unchecked")
                     Map<String, Object> doc = (Map<String, Object>) resp.getItem();
-                    verifier.verifyPointRead(v, "pointRead", step.container(), key, doc);
+                    verifier.verifyRead(v, userIdx, "pointRead", step.container(), key, doc, settledFloorAtStart);
                     return new OpResult(resp.getRequestCharge(), resp.getStatusCode());
                 })
                 .onErrorResume(CosmosException.class, e -> {
                     if (e.getStatusCode() == 404) {
-                        verifier.verifyPointRead(v, "pointRead", step.container(), key, null);
+                        verifier.verifyRead(v, userIdx, "pointRead", step.container(), key, null, settledFloorAtStart);
                         return Mono.just(new OpResult(e.getRequestCharge(), 404));
                     }
                     return Mono.error(e);
@@ -627,17 +637,32 @@ public class WorkloadEngine {
         WorkloadVerificationState v = state.vstate;
         if (v != null) {
             // Verification mode: pick a keyspace key, write a self-verifying value at the key's
-            // next sequence, using the deterministic pk so reads address the same partition.
+            // next sequence, using the deterministic pk so reads address the same partition. The
+            // write lifecycle (begin → ack/fail) feeds the reference model so reads can be checked.
             String pkField = (String) step.params().get("pkField");
             String key = v.randomKey();
             String pkValue = v.pkValueFor(key);
             @SuppressWarnings("unchecked")
             Map<String, Object> template = step.params().get("template") instanceof Map<?, ?> m
                 ? (Map<String, Object>) m : null;
+            // buildWriteDoc calls beginWrite (allocates seq + marks in-flight).
             Map<String, Object> doc = verifier.buildWriteDoc(v, step.container(), key, pkField, pkValue, userIdx, template);
+            long seq = VerifiedValue.seqOf(doc);
             CosmosAsyncContainer container = database.getContainer(step.container());
             return container.upsertItem(doc, new PartitionKey(pkValue), new CosmosItemRequestOptions())
-                .map(resp -> new OpResult(resp.getRequestCharge(), resp.getStatusCode()));
+                .map(resp -> {
+                    boolean settled = v.ackWrite(step.container(), key, seq);
+                    // Only a settled (non-concurrent) write establishes this user's read-your-writes
+                    // floor — a concurrent write's seq isn't a sound lower bound for later reads.
+                    if (settled) {
+                        v.bumpSessionFloor(userIdx, step.container(), key, seq, WorkloadVerificationState.SOURCE_WRITE);
+                    }
+                    return new OpResult(resp.getRequestCharge(), resp.getStatusCode());
+                })
+                .onErrorResume(e -> {
+                    v.failWrite(step.container(), key, seq);
+                    return Mono.error(e);
+                });
         }
         // partitionKeys / pkField validated as non-empty/non-blank in validateStepParams.
         // Use List<?> + toString() so integer PK values don't ClassCastException at runtime

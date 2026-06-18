@@ -9,6 +9,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Queue;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ThreadLocalRandom;
@@ -40,13 +41,27 @@ final class WorkloadVerificationState {
     /** Cap on retained anomaly samples (the endpoint pages these; counters remain exact). */
     private static final int MAX_RETAINED_ANOMALIES = 10_000;
 
+    /** Soft cap on per-(user,key) session-floor entries so a huge keyspace × concurrency can't
+     *  grow the session map without bound; beyond it, monotonic/read-your-write tracking degrades. */
+    private static final int MAX_SESSION_FLOORS = 2_000_000;
+
+    /** Session-floor source tags — which kind of op established the current floor for a (user,key). */
+    static final int SOURCE_WRITE = 0;
+    static final int SOURCE_READ = 1;
+
     private final String runId;
     private final WorkloadVerification config;
+    private final String level;
+    private final boolean sessionTracked;
     private final String prefix;
     private final int size;
     private final double sampleRate;
 
-    private final ConcurrentHashMap<String, AtomicLong> seqByKey = new ConcurrentHashMap<>();
+    /** The reference model: one {@link KeyState} per {@code container|key}. */
+    private final ConcurrentHashMap<String, KeyState> keyStates = new ConcurrentHashMap<>();
+    /** Per-(user,container,key) session floor: {@code [maxSeqSeen, source]}. Single-writer per
+     *  entry (a virtual user runs its ops sequentially), so the array is updated without locking. */
+    private final ConcurrentHashMap<String, long[]> sessionFloors = new ConcurrentHashMap<>();
     private final AtomicLong opSeqGlobal = new AtomicLong(0);
 
     private final Queue<WorkloadAnomaly> retained = new ConcurrentLinkedQueue<>();
@@ -59,6 +74,8 @@ final class WorkloadVerificationState {
     WorkloadVerificationState(String runId, WorkloadVerification config) {
         this.runId = runId;
         this.config = config;
+        this.level = config.levelOrDefault();
+        this.sessionTracked = "session".equals(this.level);
         WorkloadVerification.Keyspace ks = config.keyspaceOrDefault();
         this.prefix = ks.prefixOrDefault();
         this.size = ks.sizeOrDefault();
@@ -70,7 +87,7 @@ final class WorkloadVerificationState {
     }
 
     String level() {
-        return config.levelOrDefault();
+        return level;
     }
 
     int keyspaceSize() {
@@ -94,11 +111,125 @@ final class WorkloadVerificationState {
         return prefix + "-pk-" + Math.floorMod(VerifiedValue.stableHash(key), KEYSPACE_PARTITIONS);
     }
 
-    // ----- sequence + op counters -----
+    // ----- reference model: write lifecycle + queries -----
 
-    /** Next strictly-increasing sequence for {@code (container,key)} (first write gets 1). */
-    long nextSeq(String container, String key) {
-        return seqByKey.computeIfAbsent(container + "|" + key, k -> new AtomicLong(0)).incrementAndGet();
+    private KeyState keyState(String container, String key) {
+        return keyStates.computeIfAbsent(container + "|" + key, k -> new KeyState());
+    }
+
+    /**
+     * Begin a write to {@code (container,key)}: allocate the next strictly-increasing sequence and
+     * mark it in-flight. The caller MUST later call {@link #ackWrite} (on success) or
+     * {@link #failWrite} (on error) so the model knows whether the value became durable.
+     *
+     * <p>We also track whether the write is the <b>sole writer</b> for its whole life (no other
+     * write to the key overlapped it). Only such non-concurrent writes have an unambiguous place in
+     * the version order — concurrent writes can commit in either physical order regardless of which
+     * got the higher seq — so only they may anchor a temporal (stale/read-your-writes) judgment.
+     */
+    long beginWrite(String container, String key) {
+        KeyState ks = keyState(container, key);
+        synchronized (ks) {
+            long seq = ks.allocSeq.incrementAndGet();
+            if (ks.inFlight.isEmpty()) {
+                ks.soleCandidates.add(seq);          // no overlap so far
+            } else {
+                ks.soleCandidates.clear();           // everyone now in-flight is concurrent
+            }
+            ks.inFlight.add(seq);
+            return seq;
+        }
+    }
+
+    /**
+     * Mark a write durable. Returns {@code true} when the write was <b>settled</b> — it was the sole
+     * writer for its entire interval, so its seq is the unambiguous latest committed value and may
+     * anchor temporal checks. Concurrent writes return {@code false}.
+     */
+    boolean ackWrite(String container, String key, long seq) {
+        KeyState ks = keyState(container, key);
+        synchronized (ks) {
+            ks.inFlight.remove(seq);
+            ks.latestAckedSeq.accumulateAndGet(seq, Math::max);
+            ks.tombstoned = false;
+            if (ks.soleCandidates.remove(seq)) {
+                ks.settledSeq.accumulateAndGet(seq, Math::max);
+                return true;
+            }
+            return false;
+        }
+    }
+
+    /** Mark a write failed: it leaves in-flight but may or may not have applied at the server, so a
+     *  later read observing its seq is still legitimate (not a phantom). */
+    void failWrite(String container, String key, long seq) {
+        KeyState ks = keyState(container, key);
+        synchronized (ks) {
+            ks.inFlight.remove(seq);
+            ks.soleCandidates.remove(seq);
+        }
+    }
+
+    /** Highest sequence whose write has been acknowledged for {@code (container,key)} (0 = none). */
+    long latestAckedSeq(String container, String key) {
+        return keyState(container, key).latestAckedSeq.get();
+    }
+
+    /** Highest <b>settled</b> (non-concurrent, unambiguously-ordered) acked seq — the floor a
+     *  linearizable read must not fall below. Concurrent writes never advance this. */
+    long settledSeq(String container, String key) {
+        return keyState(container, key).settledSeq.get();
+    }
+
+    /** Highest sequence ever allocated for {@code (container,key)} — a read above this is a phantom. */
+    long maxAllocatedSeq(String container, String key) {
+        return keyState(container, key).allocSeq.get();
+    }
+
+    boolean tombstoned(String container, String key) {
+        return keyState(container, key).tombstoned;
+    }
+
+    boolean sessionTracked() {
+        return sessionTracked;
+    }
+
+    // ----- per-user session floors (read-your-writes + monotonic reads) -----
+
+    private static String floorKey(int userIdx, String container, String key) {
+        return userIdx + "|" + container + "|" + key;
+    }
+
+    /** The seq floor this user has established for the key (max of its acked writes + prior reads). */
+    long sessionFloorSeq(int userIdx, String container, String key) {
+        long[] f = sessionFloors.get(floorKey(userIdx, container, key));
+        return f == null ? 0 : f[0];
+    }
+
+    /** Which op set the current floor — {@link #SOURCE_WRITE} or {@link #SOURCE_READ} (-1 if none). */
+    int sessionFloorSource(int userIdx, String container, String key) {
+        long[] f = sessionFloors.get(floorKey(userIdx, container, key));
+        return f == null ? -1 : (int) f[1];
+    }
+
+    /**
+     * Raise this user's floor for the key if {@code seq} is newer. No-op unless the run asserts
+     * session consistency. Single-writer per entry (sequential per virtual user), so the in-place
+     * array update needs no lock.
+     */
+    void bumpSessionFloor(int userIdx, String container, String key, long seq, int source) {
+        if (!sessionTracked) return;
+        String fk = floorKey(userIdx, container, key);
+        long[] existing = sessionFloors.get(fk);
+        if (existing == null) {
+            if (sessionFloors.size() >= MAX_SESSION_FLOORS) return; // soft memory guard
+            sessionFloors.putIfAbsent(fk, new long[] {seq, source});
+            return;
+        }
+        if (seq > existing[0]) {
+            existing[0] = seq;
+            existing[1] = source;
+        }
     }
 
     long nextOpSeq() {
@@ -160,5 +291,23 @@ final class WorkloadVerificationState {
 
     long anomalyCount() {
         return anomalyTotal.get();
+    }
+
+    /**
+     * Reference-model state for one {@code (container,key)} register. {@code allocSeq} is the
+     * monotonic sequence source (every write attempt bumps it); {@code latestAckedSeq} is the
+     * highest durable seq; {@code inFlight} holds seqs whose write started but hasn't acked yet.
+     * All fields are safe for concurrent virtual users (atomics + a concurrent set).
+     */
+    static final class KeyState {
+        final AtomicLong allocSeq = new AtomicLong(0);
+        final AtomicLong latestAckedSeq = new AtomicLong(0);
+        /** Highest acked seq that was the sole writer for its whole interval (unambiguous order). */
+        final AtomicLong settledSeq = new AtomicLong(0);
+        final Set<Long> inFlight = ConcurrentHashMap.newKeySet();
+        /** In-flight seqs that have had no overlapping write so far; cleared the moment another
+         *  write joins (they all become concurrent). Guarded by {@code synchronized(this)}. */
+        final Set<Long> soleCandidates = ConcurrentHashMap.newKeySet();
+        volatile boolean tombstoned = false;
     }
 }
