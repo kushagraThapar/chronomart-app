@@ -250,6 +250,22 @@ class WorkloadVerifierTest {
     // ----- L0: query + vector (verifier methods exist; executor wiring lands separately) -----
 
     @Test
+    void scopedQueryFlagsStrippedEnvelope() {
+        WorkloadVerificationState s = state("session");
+        Map<String, Object> good = verifier.buildWriteDoc(s, C, "wl-000026", "sellerId", s.pkValueFor("wl-000026"), 1, null);
+        Object pk = good.get("sellerId");
+        // a doc on the right partition but with no _verify envelope (stripped / foreign write)
+        Map<String, Object> stripped = new java.util.LinkedHashMap<>();
+        stripped.put("id", "wl-000027");
+        stripped.put("sellerId", pk);
+        verifier.verifyScopedQuery(s, "query", C, "sellerId", pk, List.of(good, stripped));
+        assertThat(s.anomalies(0, 10)).singleElement().satisfies(x -> {
+            assertThat(x.code()).isEqualTo("CHECKSUM_MISMATCH");
+            assertThat(x.key()).isEqualTo("wl-000027");
+        });
+    }
+
+    @Test
     void scopedQueryFlagsCrossPartitionLeak() {
         WorkloadVerificationState s = state("session");
         Map<String, Object> good = verifier.buildWriteDoc(s, C, "wl-000022", "sellerId", s.pkValueFor("wl-000022"), 1, null);
@@ -260,18 +276,36 @@ class WorkloadVerifierTest {
     }
 
     @Test
-    void vectorOrderViolationIsFlagged() {
+    void distanceMetricOrderViolationIsFlagged() {
         WorkloadVerificationState s = state("session");
-        verifier.verifyVectorOrder(s, "vectorSearch", "ProductVectors", List.of(0.1, 0.2, 0.15));
+        // ascending=distance: a smaller distance after a larger one breaks most-similar-first.
+        verifier.verifyVectorOrder(s, "vectorSearch", "ProductVectors", List.of(0.1, 0.2, 0.15), false);
         assertThat(s.anomalies(0, 10)).singleElement().satisfies(x ->
             assertThat(x.code()).isEqualTo("VECTOR_ORDER_VIOLATION"));
     }
 
     @Test
-    void monotonicVectorPageRaisesNothing() {
+    void monotonicDistancePageRaisesNothing() {
         WorkloadVerificationState s = state("session");
-        verifier.verifyVectorOrder(s, "vectorSearch", "ProductVectors", List.of(0.1, 0.2, 0.2, 0.9));
+        verifier.verifyVectorOrder(s, "vectorSearch", "ProductVectors", List.of(0.1, 0.2, 0.2, 0.9), false);
         assertThat(s.anomalyCount()).isZero();
+    }
+
+    @Test
+    void cosineDescendingOrderIsClean() {
+        WorkloadVerificationState s = state("session");
+        // COSINE similarity descends, most-similar-first (1.0 -> 0.0); this must NOT flag.
+        verifier.verifyVectorOrder(s, "vectorSearch", "ProductVectors", List.of(0.95, 0.80, 0.80, 0.10), true);
+        assertThat(s.anomalyCount()).isZero();
+    }
+
+    @Test
+    void cosineSimilarityRisingIsViolation() {
+        WorkloadVerificationState s = state("session");
+        // similarity that increases down the page means the ranking is broken.
+        verifier.verifyVectorOrder(s, "vectorSearch", "ProductVectors", List.of(0.90, 0.95), true);
+        assertThat(s.anomalies(0, 10)).singleElement().satisfies(x ->
+            assertThat(x.code()).isEqualTo("VECTOR_ORDER_VIOLATION"));
     }
 
     @Test

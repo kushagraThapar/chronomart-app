@@ -4,11 +4,16 @@ import com.azure.cosmos.CosmosAsyncContainer;
 import com.azure.cosmos.CosmosAsyncDatabase;
 import com.azure.cosmos.CosmosException;
 import com.azure.cosmos.models.CosmosItemRequestOptions;
+import com.azure.cosmos.models.CosmosQueryRequestOptions;
+import com.azure.cosmos.models.CosmosVectorDistanceFunction;
 import com.azure.cosmos.models.PartitionKey;
+import com.azure.cosmos.models.SqlParameter;
+import com.azure.cosmos.models.SqlQuerySpec;
 import com.chronomart.web.dto.AnomalySummary;
 import com.chronomart.web.dto.BulkOperation;
 import com.chronomart.web.dto.BulkRequest;
 import com.chronomart.web.dto.QueryRequest;
+import com.chronomart.web.dto.VectorMatch;
 import com.chronomart.web.dto.VectorSearchRequest;
 import com.chronomart.web.dto.WorkloadAnomaly;
 import com.chronomart.web.dto.WorkloadOpStats;
@@ -286,6 +291,20 @@ public class WorkloadEngine {
                 }
             }
             case "query" -> {
+                if (verifying) {
+                    // The engine generates the scoped query; it only needs to know the pk field.
+                    // pkField is interpolated into the SQL property path (Cosmos can't parameterize
+                    // a path), so require a simple identifier to keep it injection-safe.
+                    if (!(p.get("pkField") instanceof String pkField) || pkField.isBlank()) {
+                        throw new IllegalArgumentException(
+                            "query in verification mode requires params.pkField (the partition-key field, e.g. 'sellerId')");
+                    }
+                    if (!pkField.matches("^[A-Za-z_][A-Za-z0-9_]*$")) {
+                        throw new IllegalArgumentException(
+                            "query params.pkField must be a simple identifier [A-Za-z_][A-Za-z0-9_]*, got '" + pkField + "'");
+                    }
+                    break;
+                }
                 if (!(p.get("query") instanceof String q) || q.isBlank()) {
                     throw new IllegalArgumentException("query requires non-blank params.query");
                 }
@@ -511,11 +530,11 @@ public class WorkloadEngine {
     private Mono<OpResult> execute(WorkloadStep step, WorkloadRunState state, int userIdx) {
         return switch (step.op()) {
             case "pointRead" -> executePointRead(step, state, userIdx);
-            case "query" -> executeQuery(step);
+            case "query" -> executeQuery(step, state);
             case "cartUpsert" -> executeCartUpsert(step);
             case "pointUpsert" -> executePointUpsert(step, state, userIdx);
             case "hpkPointRead" -> executeHpkPointRead(step);
-            case "vectorSearch" -> executeVectorSearch(step);
+            case "vectorSearch" -> executeVectorSearch(step, state);
             case "bulk" -> executeBulk(step);
             default -> Mono.error(new IllegalStateException("unsupported op: " + step.op()));
         };
@@ -570,7 +589,36 @@ public class WorkloadEngine {
             .map(resp -> new OpResult(resp.getRequestCharge(), resp.getStatusCode()));
     }
 
-    private Mono<OpResult> executeQuery(WorkloadStep step) {
+    private Mono<OpResult> executeQuery(WorkloadStep step, WorkloadRunState state) {
+        WorkloadVerificationState v = state.vstate;
+        if (v != null) {
+            // Verification mode: query one keyspace partition and assert every returned doc carries
+            // that partition key (no cross-partition leak) and is a valid self-verifying value.
+            // pkField is validated as a simple identifier, so interpolating it into the property
+            // path (Cosmos can't parameterize a path) is safe.
+            String pkField = (String) step.params().get("pkField");
+            String pkValue = v.pkValueFor(v.randomKey());
+            CosmosAsyncContainer c = database.getContainer(step.container());
+            SqlQuerySpec spec = new SqlQuerySpec(
+                "SELECT * FROM c WHERE c." + pkField + " = @pk",
+                List.of(new SqlParameter("@pk", pkValue)));
+            CosmosQueryRequestOptions opts = new CosmosQueryRequestOptions()
+                .setPartitionKey(new PartitionKey(pkValue));
+            return c.queryItems(spec, opts, Map.class)
+                .byPage()
+                .next()   // a single page is enough to check the predicate + values
+                .map(page -> {
+                    List<Map<String, Object>> docs = new ArrayList<>(page.getResults().size());
+                    for (Object o : page.getResults()) {
+                        @SuppressWarnings("unchecked")
+                        Map<String, Object> doc = (Map<String, Object>) o;
+                        docs.add(doc);
+                    }
+                    verifier.verifyScopedQuery(v, "query", step.container(), pkField, pkValue, docs);
+                    return new OpResult(page.getRequestCharge(), 200);
+                })
+                .defaultIfEmpty(new OpResult(0.0, 200));
+        }
         Map<String, Object> p = step.params();
         Object rawParams = p.get("parameters");
         List<QueryRequest.Parameter> params = new ArrayList<>();
@@ -719,7 +767,7 @@ public class WorkloadEngine {
             .map(resp -> new OpResult(resp.getRequestCharge(), resp.getStatusCode()));
     }
 
-    private Mono<OpResult> executeVectorSearch(WorkloadStep step) {
+    private Mono<OpResult> executeVectorSearch(WorkloadStep step, WorkloadRunState state) {
         // seeds validated as non-empty List<String> in validateStepParams.
         @SuppressWarnings("unchecked")
         List<?> rawSeeds = (List<?>) step.params().get("seeds");
@@ -727,8 +775,27 @@ public class WorkloadEngine {
         Integer k = step.params().get("k") instanceof Number n ? n.intValue() : null;
         float[] vector = embeddingGenerator.embed(seed);
         VectorSearchRequest req = new VectorSearchRequest(step.container(), vector, k);
+        WorkloadVerificationState v = state.vstate;
         return vectorSearchRunner.search(req)
-            .map(resp -> new OpResult(resp.requestCharge(), 200));
+            .map(resp -> {
+                if (v != null) {
+                    // ProductVectors uses COSINE (similarity), so most-similar-first means scores
+                    // are non-increasing. A distance metric would be non-decreasing instead.
+                    boolean descending = isSimilarityMetric(ContainerInitializer.VECTOR_DISTANCE_FUNCTION);
+                    List<Double> scores = new ArrayList<>(resp.matches().size());
+                    for (VectorMatch m : resp.matches()) {
+                        scores.add(m.score());
+                    }
+                    verifier.verifyVectorOrder(v, "vectorSearch", step.container(), scores, descending);
+                }
+                return new OpResult(resp.requestCharge(), 200);
+            });
+    }
+
+    /** Similarity metrics (COSINE, DOT_PRODUCT) rank higher-is-closer → scores descend;
+     *  distance metrics (EUCLIDEAN) rank lower-is-closer → scores ascend. */
+    private static boolean isSimilarityMetric(CosmosVectorDistanceFunction fn) {
+        return fn == CosmosVectorDistanceFunction.COSINE || fn == CosmosVectorDistanceFunction.DOT_PRODUCT;
     }
 
     private Mono<OpResult> executeBulk(WorkloadStep step) {

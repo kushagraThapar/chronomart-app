@@ -3,6 +3,7 @@ package com.chronomart.repo;
 import com.chronomart.config.ChronomartProperties;
 import com.chronomart.web.dto.WorkloadSpec;
 import com.chronomart.web.dto.WorkloadStep;
+import com.chronomart.web.dto.WorkloadVerification;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
@@ -125,6 +126,33 @@ class WorkloadEngineValidationTest {
             .isInstanceOf(IllegalArgumentException.class)
             .hasMessageContaining("partitionKey")
             .hasMessageContaining("enableCrossPartition");
+    }
+
+    // ----- query verification mode (NEW) -----
+
+    @Test
+    void rejectsVerificationQueryWithoutPkField() {
+        WorkloadStep bad = new WorkloadStep("query", "Products", 1, Map.of());
+        assertThatThrownBy(() -> engine.start(
+            new WorkloadSpec("vq-no-pkfield", 10, 1, 0, List.of(bad), verifyEnabled())))
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessageContaining("pkField");
+    }
+
+    @Test
+    void rejectsVerificationQueryWithUnsafePkField() {
+        WorkloadStep bad = new WorkloadStep("query", "Products", 1, Map.of("pkField", "sellerId; DROP"));
+        assertThatThrownBy(() -> engine.start(
+            new WorkloadSpec("vq-injection", 10, 1, 0, List.of(bad), verifyEnabled())))
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessageContaining("simple identifier");
+    }
+
+    @Test
+    void acceptsVerificationQueryWithSafePkField() {
+        WorkloadStep good = new WorkloadStep("query", "Products", 1, Map.of("pkField", "sellerId"));
+        assertThat(engine.start(new WorkloadSpec("vq-ok", 1, 1, 0, List.of(good), verifyEnabled())))
+            .isNotBlank();
     }
 
     // ----- cartUpsert -----
@@ -387,6 +415,11 @@ class WorkloadEngineValidationTest {
                 "template", Map.of("name", "bulk-synth")));
         assertThat(engine.start(new WorkloadSpec("ok-bulk", 1, 1, 0, List.of(good))))
             .isNotBlank();
+    }
+
+    private static WorkloadVerification verifyEnabled() {
+        return new WorkloadVerification(true, "session", null,
+            new WorkloadVerification.Keyspace("wl", 50), 1.0, null, null, null);
     }
 
     private static WorkloadStep validPointReadStep() {

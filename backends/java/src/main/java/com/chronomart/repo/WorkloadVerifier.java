@@ -146,7 +146,10 @@ public class WorkloadVerifier {
 
     /**
      * Verify a partition-scoped query response: every returned document must carry the scoped
-     * partition-key value, and each self-verifying value must be internally consistent.
+     * partition-key value (else {@code PREDICATE_VIOLATION} — a cross-partition leak), and must be a
+     * valid self-verifying value. A keyspace partition only ever holds oracle-written docs, so a
+     * returned doc that is missing its {@code _verify} envelope is itself corruption (a stripped or
+     * foreign write), reported via the same {@code CHECKSUM_MISMATCH} path as {@code pointRead}.
      */
     public void verifyScopedQuery(WorkloadVerificationState state, String op, String container,
                                   String pkField, Object pkValue, List<Map<String, Object>> docs) {
@@ -161,26 +164,33 @@ public class WorkloadVerifier {
                     opSeq, VerifiedValue.seqOf(doc), null));
                 continue;
             }
-            if (VerifiedValue.isVerified(doc)) {
-                recordValueViolations(state, op, container, String.valueOf(doc.get("id")), doc, opSeq);
-            }
+            recordValueViolations(state, op, container, String.valueOf(doc.get("id")), doc, opSeq);
         }
     }
 
     /**
-     * Verify that vector-search scores are non-decreasing (Cosmos returns most-similar-first, i.e.
-     * smallest distance first). {@code scores} is the ordered list of per-match distances.
+     * Verify vector-search results are ranked monotonically. Cosmos always returns
+     * most-similar-first, but the {@code score} direction depends on the container's distance
+     * function: similarity metrics (COSINE, DOT_PRODUCT) descend (higher = closer), distance
+     * metrics (EUCLIDEAN) ascend (lower = closer). {@code descending=true} asserts non-increasing
+     * scores, {@code false} asserts non-decreasing. Getting this wrong would false-flag every
+     * cosine page, so the caller passes the direction implied by the container's metric.
      */
     public void verifyVectorOrder(WorkloadVerificationState state, String op, String container,
-                                  List<Double> scores) {
+                                  List<Double> scores, boolean descending) {
         long opSeq = state.nextOpSeq();
         for (int i = 1; i < scores.size(); i++) {
             Double prev = scores.get(i - 1);
             Double cur = scores.get(i);
-            if (prev != null && cur != null && cur < prev) {
+            if (prev == null || cur == null) {
+                continue;
+            }
+            boolean outOfOrder = descending ? cur > prev : cur < prev;
+            if (outOfOrder) {
                 state.record(anomaly("VECTOR_ORDER_VIOLATION", WorkloadAnomaly.SEVERITY_ERROR, op, container,
-                    null, "result " + i + " distance " + cur + " < previous " + prev
-                        + " (results not in non-decreasing distance order)",
+                    null, "result " + i + " score " + cur + (descending ? " > " : " < ") + "previous " + prev
+                        + " (results not " + (descending ? "non-increasing" : "non-decreasing")
+                        + " — most-similar-first order broken)",
                     opSeq, null, null));
                 return; // one report per page is enough
             }
