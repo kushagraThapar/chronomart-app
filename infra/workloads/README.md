@@ -12,6 +12,7 @@ JSON presets for `POST /api/v1/workloads/run`. Load the file contents as the req
 | `bulk-ingest.json` | 100% `bulk` upsert against `Inventory` — 20 docs/batch via `BulkRunner`, single PK (`seller-001`). 4 users, 30s. |
 | `hpk-hotspot.json` | 100% `hpkPointRead` against `Orders` (3-level HPK). **Pre-req:** drive the checkout flow first (`/checkout` from `/cart`) so the smoke order ids exist; otherwise every read is a 404 and the workload measures cache-miss + 404 latency only. 16 users, 30s. |
 | `verify-register.json` | **Correctness oracle** — 50/50 `pointUpsert`/`pointRead` over an owned 500-key keyspace on `Inventory`, `verification.enabled=true`. The engine pre-seeds the keyspace with self-verifying values, then every read is L0-checked (wrong-id / checksum / field / not-found). Poll `GET /workloads/{runId}/anomalies`; a healthy run reports `anomalySummary.total=0`. 8 users, 20s. |
+| `verify-checkout.json` | **Domain invariants (L2)** — 100% `checkout`: build a cart, place an `Orders` HPK order with a correct total, clear the cart, then read both back and assert `total == Σ line items`, `qty ≥ 1`, `price ≥ 0`, and cart-is-empty. Catches an SDK round-trip that corrupts the order or fails to clear the cart. 6 users, 15s. |
 
 ## Correctness verification (oracle)
 

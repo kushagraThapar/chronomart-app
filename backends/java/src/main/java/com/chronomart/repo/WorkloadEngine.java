@@ -116,7 +116,7 @@ public class WorkloadEngine {
     /** Every op named here is wired and executable. The validator uses this list both for
      *  the unknown-op error message and as the source of truth for the capability manifest. */
     public static final List<String> KNOWN_OPS = List.of(
-        "pointRead", "pointUpsert", "query", "hpkPointRead", "vectorSearch", "bulk", "cartUpsert"
+        "pointRead", "pointUpsert", "query", "hpkPointRead", "vectorSearch", "bulk", "cartUpsert", "checkout"
     );
 
     /** Containers that {@code hpkPointRead} accepts. Other containers are allow-listed but
@@ -151,6 +151,7 @@ public class WorkloadEngine {
     private final VectorSearchRunner vectorSearchRunner;
     private final EmbeddingGenerator embeddingGenerator;
     private final WorkloadVerifier verifier;
+    private final DomainInvariantChecker domainChecker;
     private final WorkloadRegistry registry;
 
     private final ScheduledExecutorService snapshotter =
@@ -167,6 +168,7 @@ public class WorkloadEngine {
                           VectorSearchRunner vectorSearchRunner,
                           EmbeddingGenerator embeddingGenerator,
                           WorkloadVerifier verifier,
+                          DomainInvariantChecker domainChecker,
                           WorkloadRegistry registry) {
         this.database = database;
         this.allowList = allowList;
@@ -175,6 +177,7 @@ public class WorkloadEngine {
         this.vectorSearchRunner = vectorSearchRunner;
         this.embeddingGenerator = embeddingGenerator;
         this.verifier = verifier;
+        this.domainChecker = domainChecker;
         // Eagerly verify the allow-list is non-empty so a misconfigured bean fails fast
         // at startup rather than at the first workload run.
         if (this.queryRunner.allowedContainers().isEmpty()) {
@@ -443,6 +446,15 @@ public class WorkloadEngine {
                     throw new IllegalArgumentException("bulk params.pkField must be a string");
                 }
             }
+            case "checkout" -> {
+                if (!"Orders".equalsIgnoreCase(s.container())) {
+                    throw new IllegalArgumentException(
+                        "checkout must target the Orders container (got " + s.container() + ")");
+                }
+                if (!(p.get("customerIds") instanceof List<?> ids) || ids.isEmpty()) {
+                    throw new IllegalArgumentException("checkout requires non-empty params.customerIds[]");
+                }
+            }
             default -> throw new IllegalStateException("unreachable: validated op " + s.op());
         }
     }
@@ -536,6 +548,7 @@ public class WorkloadEngine {
             case "hpkPointRead" -> executeHpkPointRead(step);
             case "vectorSearch" -> executeVectorSearch(step, state);
             case "bulk" -> executeBulk(step);
+            case "checkout" -> executeCheckout(step, state);
             default -> Mono.error(new IllegalStateException("unsupported op: " + step.op()));
         };
     }
@@ -827,6 +840,95 @@ public class WorkloadEngine {
             // already; we surface 200 if the request completed (BulkRunner failure paths return
             // Mono.error which executes the error counter in oneOp).
             .map(resp -> new OpResult(resp.totalRequestCharge(), 200));
+    }
+
+    /**
+     * The marketplace's core transaction as a workload op: build a cart, place an order with the
+     * same line items + a correctly-computed total, clear the cart. In verification mode it reads
+     * both back and runs the L2 domain invariants — so an SDK round-trip that breaks
+     * {@code total == Σ items} or fails to clear the cart is caught even on a 200.
+     *
+     * <p>Touches two containers: {@code Orders} (2-level HPK {@code (customerId, yearMonth)} on the
+     * emulator — the {@code /id} leaf is deferred, see {@link OrderRepo}) and {@code Cart}
+     * (PK {@code /customerId}). Synthesised as Maps so we don't round-trip the strict domain
+     * validators on the hot path (same pattern as {@code cartUpsert}).
+     */
+    private Mono<OpResult> executeCheckout(WorkloadStep step, WorkloadRunState state) {
+        @SuppressWarnings("unchecked")
+        List<?> customerIds = (List<?>) step.params().get("customerIds");
+        // Each checkout owns a UNIQUE customer so its cart (keyed by /customerId) isn't raced by a
+        // concurrent checkout — otherwise another op writing a fresh cart between this op's clear and
+        // read-back would make cart-cleared look violated (a workload artifact, not an SDK bug). The
+        // configured ids are a namespace/partition-spread pool we suffix with a unique token.
+        String customerPrefix = customerIds.get(ThreadLocalRandom.current().nextInt(customerIds.size())).toString();
+        String customerId = customerPrefix + "-" + Long.toHexString(ThreadLocalRandom.current().nextLong());
+        String yearMonth = java.time.YearMonth.now().toString();   // YYYY-MM
+        String orderId = "wl-ord-" + Long.toHexString(ThreadLocalRandom.current().nextLong());
+
+        int itemCount = 1 + ThreadLocalRandom.current().nextInt(3);
+        List<Map<String, Object>> items = new ArrayList<>(itemCount);
+        double total = 0.0;
+        for (int i = 0; i < itemCount; i++) {
+            int qty = 1 + ThreadLocalRandom.current().nextInt(3);
+            double unitPrice = 100.0 + ThreadLocalRandom.current().nextInt(500);
+            total += qty * unitPrice;
+            Map<String, Object> it = new LinkedHashMap<>();
+            it.put("productId", "prod-" + String.format("%03d", 1 + ThreadLocalRandom.current().nextInt(30)));
+            it.put("sellerId", "seller-" + String.format("%03d", 1 + ThreadLocalRandom.current().nextInt(5)));
+            it.put("qty", qty);
+            it.put("unitPriceUsd", unitPrice);
+            items.add(it);
+        }
+
+        Map<String, Object> order = new LinkedHashMap<>();
+        order.put("id", orderId);
+        order.put("customerId", customerId);
+        order.put("yearMonth", yearMonth);
+        order.put("status", "pending");
+        order.put("items", items);
+        order.put("totalUsd", total);
+        order.put("createdAt", Instant.now().toString());
+
+        CosmosAsyncContainer orders = database.getContainer("Orders");
+        CosmosAsyncContainer carts = database.getContainer("Cart");
+        PartitionKey ordersPk = new com.azure.cosmos.models.PartitionKeyBuilder()
+            .add(customerId).add(yearMonth).build();
+        PartitionKey cartPk = new PartitionKey(customerId);
+        Map<String, Object> fullCart = cartDoc(customerId, items);
+        Map<String, Object> emptyCart = cartDoc(customerId, List.of());
+        WorkloadVerificationState v = state.vstate;
+
+        // cart has items -> place order -> clear cart.
+        return carts.upsertItem(fullCart, cartPk, new CosmosItemRequestOptions())
+            .flatMap(r1 -> orders.upsertItem(order, ordersPk, new CosmosItemRequestOptions())
+                .flatMap(r2 -> carts.upsertItem(emptyCart, cartPk, new CosmosItemRequestOptions())
+                    .flatMap(r3 -> {
+                        double writeRu = r1.getRequestCharge() + r2.getRequestCharge() + r3.getRequestCharge();
+                        if (v == null) {
+                            return Mono.just(new OpResult(writeRu, 200));
+                        }
+                        return orders.readItem(orderId, ordersPk, Map.class)
+                            .zipWith(carts.readItem(customerId, cartPk, Map.class))
+                            .map(t -> {
+                                @SuppressWarnings("unchecked")
+                                Map<String, Object> readOrder = (Map<String, Object>) t.getT1().getItem();
+                                @SuppressWarnings("unchecked")
+                                Map<String, Object> readCart = (Map<String, Object>) t.getT2().getItem();
+                                domainChecker.checkOrder(v, "checkout", "Orders", readOrder);
+                                domainChecker.checkCartCleared(v, "checkout", "Cart", readCart);
+                                return new OpResult(writeRu + t.getT1().getRequestCharge()
+                                    + t.getT2().getRequestCharge(), 200);
+                            });
+                    })));
+    }
+
+    private static Map<String, Object> cartDoc(String customerId, List<Map<String, Object>> items) {
+        Map<String, Object> doc = new LinkedHashMap<>();
+        doc.put("id", customerId);
+        doc.put("customerId", customerId);
+        doc.put("items", items);
+        doc.put("updatedAt", Instant.now().toString());
+        return doc;
     }
 
     // ----- snapshot -----
