@@ -44,11 +44,12 @@ class WorkloadEngineValidationTest {
         Mockito.when(vectorSearchRunner.isReady()).thenReturn(true);
         EmbeddingGenerator embeddingGenerator = Mockito.mock(EmbeddingGenerator.class);
         WorkloadVerifier verifier = new WorkloadVerifier();
+        DomainInvariantChecker domainChecker = new DomainInvariantChecker();
         WorkloadRegistry registry = new WorkloadRegistry();
         engine = new WorkloadEngine(
             Mockito.mock(com.azure.cosmos.CosmosAsyncDatabase.class),
             allowList, queryRunner, bulkRunner, vectorSearchRunner, embeddingGenerator,
-            verifier, registry);
+            verifier, domainChecker, registry);
     }
 
     // ----- spec-level guards -----
@@ -174,6 +175,33 @@ class WorkloadEngineValidationTest {
             new WorkloadSpec("no-customer-ids", 10, 1, 0, List.of(bad))))
             .isInstanceOf(IllegalArgumentException.class)
             .hasMessageContaining("customerIds");
+    }
+
+    // ----- checkout (NEW) -----
+
+    @Test
+    void rejectsCheckoutOnWrongContainer() {
+        WorkloadStep bad = new WorkloadStep("checkout", "Products", 1, Map.of("customerIds", List.of("c1")));
+        assertThatThrownBy(() -> engine.start(
+            new WorkloadSpec("checkout-wrong", 10, 1, 0, List.of(bad))))
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessageContaining("Orders container");
+    }
+
+    @Test
+    void rejectsCheckoutWithoutCustomerIds() {
+        WorkloadStep bad = new WorkloadStep("checkout", "Orders", 1, Map.of());
+        assertThatThrownBy(() -> engine.start(
+            new WorkloadSpec("checkout-no-cust", 10, 1, 0, List.of(bad))))
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessageContaining("customerIds");
+    }
+
+    @Test
+    void acceptsValidCheckout() {
+        WorkloadStep good = new WorkloadStep("checkout", "Orders", 1, Map.of("customerIds", List.of("cust-1")));
+        assertThat(engine.start(new WorkloadSpec("checkout-ok", 1, 1, 0, List.of(good))))
+            .isNotBlank();
     }
 
     // ----- pointUpsert (NEW) -----

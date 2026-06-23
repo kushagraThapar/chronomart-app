@@ -1,0 +1,15 @@
+{
+  "name": "verify-checkout",
+  "durationSeconds": 15,
+  "concurrency": 6,
+  "rampSeconds": 0,
+  "steps": [
+    {
+      "op": "checkout",
+      "container": "Orders",
+      "weight": 100,
+      "params": { "customerIds": ["cust-001", "cust-002", "cust-003", "cust-004", "cust-005"] }
+    }
+  ],
+  "verification": { "enabled": true, "level": "session" }
+}
