@@ -1,6 +1,7 @@
 package com.chronomart.repo;
 
 import com.chronomart.web.dto.AnomalySummary;
+import com.chronomart.web.dto.OpHistoryRecord;
 import com.chronomart.web.dto.WorkloadAnomaly;
 import com.chronomart.web.dto.WorkloadVerification;
 
@@ -56,6 +57,8 @@ final class WorkloadVerificationState {
     private final String prefix;
     private final int size;
     private final double sampleRate;
+    private final long historyCap;
+    private final long runStartNanos = System.nanoTime();
 
     /** The reference model: one {@link KeyState} per {@code container|key}. */
     private final ConcurrentHashMap<String, KeyState> keyStates = new ConcurrentHashMap<>();
@@ -63,6 +66,11 @@ final class WorkloadVerificationState {
      *  entry (a virtual user runs its ops sequentially), so the array is updated without locking. */
     private final ConcurrentHashMap<String, long[]> sessionFloors = new ConcurrentHashMap<>();
     private final AtomicLong opSeqGlobal = new AtomicLong(0);
+
+    /** Op-history ring for the offline analyzer + the download endpoint, capped at {@code historyCap}. */
+    private final Queue<OpHistoryRecord> history = new ConcurrentLinkedQueue<>();
+    private final AtomicLong historyCount = new AtomicLong(0);
+    private final AtomicLong historySeq = new AtomicLong(0);
 
     private final Queue<WorkloadAnomaly> retained = new ConcurrentLinkedQueue<>();
     private final AtomicLong anomalyTotal = new AtomicLong(0);
@@ -80,6 +88,7 @@ final class WorkloadVerificationState {
         this.prefix = ks.prefixOrDefault();
         this.size = ks.sizeOrDefault();
         this.sampleRate = config.sampleRateOrDefault();
+        this.historyCap = config.historyCapOrDefault();
     }
 
     String runId() {
@@ -234,6 +243,45 @@ final class WorkloadVerificationState {
 
     long nextOpSeq() {
         return opSeqGlobal.incrementAndGet();
+    }
+
+    // ----- op history (offline-analyzer input + download artifact) -----
+
+    /** Nanos since run start — relative so op intervals compare without absolute clocks. */
+    long relativeNanos() {
+        return System.nanoTime() - runStartNanos;
+    }
+
+    /**
+     * Append one single-register op to the history (bounded at {@code historyCap}; once full, further
+     * ops are counted but not retained so memory stays bounded). {@code beginNanos}/{@code endNanos}
+     * are run-relative (see {@link #relativeNanos()}).
+     */
+    void recordHistory(int userIdx, String op, String container, String key, long beginNanos, long endNanos,
+                       String outcome, Long writeSeq, Long observedSeq, int statusCode, double requestCharge) {
+        long seq = historySeq.getAndIncrement();
+        if (historyCount.getAndIncrement() < historyCap) {
+            history.add(new OpHistoryRecord(seq, userIdx, op, container, key, beginNanos, endNanos,
+                outcome, writeSeq, observedSeq, statusCode, requestCharge));
+        }
+    }
+
+    /** A page of the recorded history, in recording order. */
+    List<OpHistoryRecord> history(int offset, int limit) {
+        List<OpHistoryRecord> all = new ArrayList<>(history);
+        if (offset >= all.size()) {
+            return List.of();
+        }
+        return all.subList(offset, Math.min(all.size(), offset + limit));
+    }
+
+    /** Total ops seen (may exceed the retained size if {@code historyCap} was hit). */
+    long historySeen() {
+        return historyCount.get();
+    }
+
+    int historyRetained() {
+        return history.size();
     }
 
     /** Sampling gate — true when this op should be verified live (full rate verifies everything). */
