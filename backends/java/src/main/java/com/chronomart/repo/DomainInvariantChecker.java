@@ -69,7 +69,13 @@ public class DomainInvariantChecker {
     /** After checkout the customer's cart must be empty. */
     public void checkCartCleared(WorkloadVerificationState state, String op, String container, Map<String, Object> cart) {
         long opSeq = state.nextOpSeq();
-        if (cart.get("items") instanceof List<?> items && !items.isEmpty()) {
+        Object rawItems = cart.get("items");
+        if (!(rawItems instanceof List<?> items)) {
+            record(state, "DOMAIN_INVARIANT_CART_NOT_CLEARED", op, container, String.valueOf(cart.get("id")),
+                "cart items[] is missing or not an array after checkout", opSeq);
+            return;
+        }
+        if (!items.isEmpty()) {
             record(state, "DOMAIN_INVARIANT_CART_NOT_CLEARED", op, container, String.valueOf(cart.get("id")),
                 "cart still has " + items.size() + " item(s) after checkout", opSeq);
         }

@@ -100,4 +100,12 @@ class DomainInvariantCheckerTest {
             assertThat(x.key()).isEqualTo("cust-1");
         });
     }
+
+    @Test
+    void cartWithoutItemsArrayIsFlagged() {
+        WorkloadVerificationState s = state();
+        checker.checkCartCleared(s, "checkout", "Cart", Map.of("id", "cust-1"));
+        assertThat(s.anomalies(0, 10)).singleElement().satisfies(x ->
+            assertThat(x.code()).isEqualTo("DOMAIN_INVARIANT_CART_NOT_CLEARED"));
+    }
 }
