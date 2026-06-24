@@ -18,28 +18,11 @@ JSON presets for `POST /api/v1/workloads/run`. Load the file contents as the req
 
 A run with a `verification` block operates over a bounded, engine-owned keyspace so reads and
 writes collide and every response can be checked. Each write embeds a self-verifying value
-(`_verify` envelope + deterministic fields). Checks run in layers: **L0** intra-response
-(`WRONG_ID`, `CHECKSUM_MISMATCH`, `FIELD_MISMATCH`, `PREDICATE_VIOLATION`, `VECTOR_ORDER_VIOLATION`);
-**L1** temporal against a per-key reference model, graded by `level` (`STALE_READ`, `LOST_WRITE`,
-`PHANTOM_READ`, `READ_YOUR_WRITE_VIOLATION`, `MONOTONIC_READ_VIOLATION`); **L2** domain invariants
-on real `checkout` documents. Anomalies are summarised on the run status (`anomalySummary`) and
-paged via `GET /workloads/{runId}/anomalies`.
-
-### Offline analyzer + CI gate
-
-Every verification run also records a structured single-register op history (`GET
-/workloads/{runId}/history`). The **offline analyzer** re-derives settled writes from the op
-intervals and checks real-time **linearizability** independently of the live oracle:
-
-```
-java -cp <backend.jar> -Dloader.main=com.chronomart.oracle.OfflineHistoryAnalyzer \
-     org.springframework.boot.loader.launch.PropertiesLauncher history.json
-# exits non-zero on any STALE_READ / LOST_WRITE / PHANTOM_READ
-```
-
-`scripts/oracle-gate.sh [BASE_URL] [PRESET]` runs a verification workload and **fails CI**
-(non-zero exit) when ERROR anomalies exceed `THRESHOLD` (default 0); set `ANALYZER_JAR` to also
-download the history and run the offline analyzer as a second, independent check.
+(`_verify` envelope + deterministic fields); each read/query is checked with no cross-op state in
+this slice (L0): `WRONG_ID`, `CHECKSUM_MISMATCH`, `FIELD_MISMATCH`, `PREDICATE_VIOLATION`,
+`VECTOR_ORDER_VIOLATION`, `UNEXPECTED_NOT_FOUND`. Anomalies are summarised on the run status
+(`anomalySummary`) and paged via `GET /workloads/{runId}/anomalies`. Temporal checks
+(read-your-writes / stale / lost / phantom, per `level`) land in the next slice.
 
 
 ## Op coverage

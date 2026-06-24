@@ -615,29 +615,6 @@ paths:
                 items: { $ref: '#/components/schemas/WorkloadAnomaly' }
         "404": { $ref: '#/components/responses/NotFound' }
 
-  /workloads/{runId}/history:
-    parameters:
-      - { in: path, name: runId, required: true, schema: { type: string } }
-      - { in: query, name: offset, schema: { type: integer, minimum: 0, default: 0 } }
-      - { in: query, name: limit,  schema: { type: integer, minimum: 1, maximum: 5000, default: 1000 } }
-    get:
-      operationId: getWorkloadHistory
-      tags: [workloads]
-      summary: Paged single-register op history for a verification run
-      description: >
-        The structured op log (pointRead / pointUpsert over the owned keyspace) the offline
-        analyzer consumes — page through it to download the full artifact. Empty when verification
-        was disabled; 404 when the run is unknown.
-      responses:
-        "200":
-          description: OK
-          content:
-            application/json:
-              schema:
-                type: array
-                items: { $ref: '#/components/schemas/OpHistoryRecord' }
-        "404": { $ref: '#/components/responses/NotFound' }
-
 
   parameters:
     PageSize:
@@ -1184,24 +1161,6 @@ paths:
         samples:
           type: array
           items: { $ref: '#/components/schemas/WorkloadAnomaly' }
-
-    OpHistoryRecord:
-      type: object
-      required: [globalSeq, userIdx, op, container, key, beginNanos, endNanos, outcome, statusCode, requestCharge]
-      description: One single-register op in a run's history — the offline analyzer's input.
-      properties:
-        globalSeq: { type: integer, format: int64 }
-        userIdx: { type: integer }
-        op: { type: string, enum: [pointRead, pointUpsert] }
-        container: { type: string }
-        key: { type: string }
-        beginNanos: { type: integer, format: int64, description: op start, nanos since run start }
-        endNanos: { type: integer, format: int64, description: op completion, nanos since run start }
-        outcome: { type: string, enum: [ok, notfound, error] }
-        writeSeq: { type: ['integer', 'null'], format: int64 }
-        observedSeq: { type: ['integer', 'null'], format: int64 }
-        statusCode: { type: integer }
-        requestCharge: { type: number }
 
     WorkloadRunHandle:
       type: object
