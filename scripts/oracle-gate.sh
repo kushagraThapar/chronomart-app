@@ -44,6 +44,7 @@ while :; do
   sleep 2
 done
 echo "oracle-gate: run status=$status"
+[ "$status" = "COMPLETED" ] || { echo "oracle-gate: FAIL — terminal status is $status" >&2; exit 2; }
 
 read -r total errors warns <<<"$(echo "$progress" | python3 -c "
 import json,sys

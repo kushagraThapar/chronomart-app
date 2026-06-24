@@ -62,17 +62,17 @@ public final class OfflineHistoryAnalyzer {
         long reads = 0;
         long writes = 0;
         for (List<OpHistoryRecord> recs : byKey.values()) {
+            long maxAllocatedSeq = 0;
             List<OpHistoryRecord> okWrites = new ArrayList<>();
             for (OpHistoryRecord r : recs) {
+                if ("pointUpsert".equals(r.op()) && r.writeSeq() != null) {
+                    maxAllocatedSeq = Math.max(maxAllocatedSeq, r.writeSeq());
+                }
                 if ("pointUpsert".equals(r.op()) && OpHistoryRecord.OUTCOME_OK.equals(r.outcome()) && r.writeSeq() != null) {
                     okWrites.add(r);
                 }
             }
             writes += okWrites.size();
-            long maxSeq = 0;
-            for (OpHistoryRecord w : okWrites) {
-                maxSeq = Math.max(maxSeq, w.writeSeq());
-            }
             // Settled = no other write overlapped this write's [begin,end] interval.
             List<OpHistoryRecord> settled = new ArrayList<>();
             for (OpHistoryRecord w : okWrites) {
@@ -106,9 +106,9 @@ public final class OfflineHistoryAnalyzer {
                 if (v == null) {
                     continue;
                 }
-                if (v > maxSeq) {
+                if (v > maxAllocatedSeq) {
                     violations.add(new Violation("PHANTOM_READ", key,
-                        "observed seq " + v + " exceeds max written seq " + maxSeq, v, null));
+                        "observed seq " + v + " exceeds max allocated seq " + maxAllocatedSeq, v, null));
                     continue;
                 }
                 long staleFloor = settledFloorBefore(settled, r.beginNanos(), v);

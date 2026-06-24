@@ -21,6 +21,10 @@ class OfflineHistoryAnalyzerTest {
         return new OpHistoryRecord(g, 0, "pointUpsert", C, key, begin, end, OpHistoryRecord.OUTCOME_OK, seq, null, 200, 1.0);
     }
 
+    private OpHistoryRecord writeError(long g, String key, long seq, long begin, long end) {
+        return new OpHistoryRecord(g, 0, "pointUpsert", C, key, begin, end, OpHistoryRecord.OUTCOME_ERROR, seq, null, 0, 0.0);
+    }
+
     private OpHistoryRecord read(long g, String key, Long observed, long begin, long end) {
         return new OpHistoryRecord(g, 0, "pointRead", C, key, begin, end, OpHistoryRecord.OUTCOME_OK, null, observed, 200, 1.0);
     }
@@ -61,6 +65,15 @@ class OfflineHistoryAnalyzerTest {
             read(1, "k", 5L, 20, 30)));
         assertThat(v.violations()).singleElement().satisfies(x ->
             assertThat(x.code()).isEqualTo("PHANTOM_READ"));
+    }
+
+    @Test
+    void readAtAllocatedSeqIsNotPhantomWhenWriteErrored() {
+        var v = OfflineHistoryAnalyzer.analyze(List.of(
+            write(0, "k", 1, 0, 10),
+            writeError(1, "k", 2, 12, 20),
+            read(2, "k", 2L, 30, 40)));
+        assertThat(v.clean()).isTrue();
     }
 
     @Test
