@@ -1,6 +1,7 @@
 package com.chronomart.web;
 
 import com.chronomart.repo.WorkloadEngine;
+import com.chronomart.web.dto.OpHistoryRecord;
 import com.chronomart.web.dto.WorkloadAnomaly;
 import com.chronomart.web.dto.WorkloadProgress;
 import com.chronomart.web.dto.WorkloadSpec;
@@ -45,6 +46,8 @@ public class WorkloadController {
 
     /** Hard cap on a single anomalies page so a caller can't request an unbounded slice. */
     private static final int MAX_ANOMALY_PAGE = 500;
+    /** Hard cap on a single history page (records are larger; allow a bigger page for downloads). */
+    private static final int MAX_HISTORY_PAGE = 5000;
 
     private final WorkloadEngine engine;
 
@@ -79,6 +82,15 @@ public class WorkloadController {
             @RequestParam(defaultValue = "0") @Min(0) int offset,
             @RequestParam(defaultValue = "100") @Min(1) @Max(MAX_ANOMALY_PAGE) int limit) {
         List<WorkloadAnomaly> page = engine.anomalies(runId, offset, limit);
+        return page == null ? ResponseEntity.notFound().build() : ResponseEntity.ok(page);
+    }
+
+    @GetMapping("/{runId}/history")
+    public ResponseEntity<List<OpHistoryRecord>> history(
+            @PathVariable String runId,
+            @RequestParam(defaultValue = "0") @Min(0) int offset,
+            @RequestParam(defaultValue = "1000") @Min(1) @Max(MAX_HISTORY_PAGE) int limit) {
+        List<OpHistoryRecord> page = engine.history(runId, offset, limit);
         return page == null ? ResponseEntity.notFound().build() : ResponseEntity.ok(page);
     }
 

@@ -12,6 +12,7 @@ import com.azure.cosmos.models.SqlQuerySpec;
 import com.chronomart.web.dto.AnomalySummary;
 import com.chronomart.web.dto.BulkOperation;
 import com.chronomart.web.dto.BulkRequest;
+import com.chronomart.web.dto.OpHistoryRecord;
 import com.chronomart.web.dto.QueryRequest;
 import com.chronomart.web.dto.VectorMatch;
 import com.chronomart.web.dto.VectorSearchRequest;
@@ -222,6 +223,14 @@ public class WorkloadEngine {
         WorkloadRunState state = registry.get(runId);
         if (state == null) return null;
         return state.vstate == null ? List.of() : state.vstate.anomalies(offset, limit);
+    }
+
+    /** Paged op-history (single-register ops) for a verification run — the offline-analyzer input.
+     *  {@code null} when the run is unknown; empty when verification was disabled. */
+    public List<OpHistoryRecord> history(String runId, int offset, int limit) {
+        WorkloadRunState state = registry.get(runId);
+        if (state == null) return null;
+        return state.vstate == null ? List.of() : state.vstate.history(offset, limit);
     }
 
     /** Cooperative stop. The run won't issue new ops once observed; in-flight ops
@@ -565,6 +574,7 @@ public class WorkloadEngine {
             // (non-concurrent, unambiguously-ordered) committed seq. A strong read must not return
             // an older value; using settledSeq avoids false positives from concurrent same-key writes.
             long settledFloorAtStart = v.settledSeq(step.container(), key);
+            long beginNanos = v.relativeNanos();
             PartitionKey pk = new PartitionKey(pkValue);
             CosmosAsyncContainer container = database.getContainer(step.container());
             return container.readItem(key, pk, Map.class)
@@ -572,13 +582,20 @@ public class WorkloadEngine {
                     @SuppressWarnings("unchecked")
                     Map<String, Object> doc = (Map<String, Object>) resp.getItem();
                     verifier.verifyRead(v, userIdx, "pointRead", step.container(), key, doc, settledFloorAtStart);
+                    Long observedSeq = VerifiedValue.seqOf(doc);
+                    v.recordHistory(userIdx, "pointRead", step.container(), key, beginNanos, v.relativeNanos(),
+                        OpHistoryRecord.OUTCOME_OK, null, observedSeq, resp.getStatusCode(), resp.getRequestCharge());
                     return new OpResult(resp.getRequestCharge(), resp.getStatusCode());
                 })
                 .onErrorResume(CosmosException.class, e -> {
                     if (e.getStatusCode() == 404) {
                         verifier.verifyRead(v, userIdx, "pointRead", step.container(), key, null, settledFloorAtStart);
+                        v.recordHistory(userIdx, "pointRead", step.container(), key, beginNanos, v.relativeNanos(),
+                            OpHistoryRecord.OUTCOME_NOTFOUND, null, null, 404, e.getRequestCharge());
                         return Mono.just(new OpResult(e.getRequestCharge(), 404));
                     }
+                    v.recordHistory(userIdx, "pointRead", step.container(), key, beginNanos, v.relativeNanos(),
+                        OpHistoryRecord.OUTCOME_ERROR, null, null, e.getStatusCode(), e.getRequestCharge());
                     return Mono.error(e);
                 });
         }
@@ -709,6 +726,7 @@ public class WorkloadEngine {
             // buildWriteDoc calls beginWrite (allocates seq + marks in-flight).
             Map<String, Object> doc = verifier.buildWriteDoc(v, step.container(), key, pkField, pkValue, userIdx, template);
             long seq = VerifiedValue.seqOf(doc);
+            long beginNanos = v.relativeNanos();
             CosmosAsyncContainer container = database.getContainer(step.container());
             return container.upsertItem(doc, new PartitionKey(pkValue), new CosmosItemRequestOptions())
                 .map(resp -> {
@@ -718,10 +736,14 @@ public class WorkloadEngine {
                     if (settled) {
                         v.bumpSessionFloor(userIdx, step.container(), key, seq, WorkloadVerificationState.SOURCE_WRITE);
                     }
+                    v.recordHistory(userIdx, "pointUpsert", step.container(), key, beginNanos, v.relativeNanos(),
+                        OpHistoryRecord.OUTCOME_OK, seq, null, resp.getStatusCode(), resp.getRequestCharge());
                     return new OpResult(resp.getRequestCharge(), resp.getStatusCode());
                 })
                 .onErrorResume(e -> {
                     v.failWrite(step.container(), key, seq);
+                    v.recordHistory(userIdx, "pointUpsert", step.container(), key, beginNanos, v.relativeNanos(),
+                        OpHistoryRecord.OUTCOME_ERROR, seq, null, 0, 0.0);
                     return Mono.error(e);
                 });
         }
