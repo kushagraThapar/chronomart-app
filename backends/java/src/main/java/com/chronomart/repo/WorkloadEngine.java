@@ -476,8 +476,11 @@ public class WorkloadEngine {
      * step; with no write step there is nothing to seed (reads will surface UNEXPECTED_NOT_FOUND,
      * which is itself signal). Best-effort — individual seed failures are swallowed so a flaky
      * key doesn't abort the run.
+     *
+     * <p>Package-private (not {@code private}) so {@code WorkloadEnginePreSeedTest} can assert the
+     * seed writes are recorded into the op history — the property the offline analyzer depends on.
      */
-    private Mono<Void> preSeedKeyspace(WorkloadRunState state, WorkloadVerificationState vstate) {
+    Mono<Void> preSeedKeyspace(WorkloadRunState state, WorkloadVerificationState vstate) {
         WorkloadStep writeStep = state.spec.steps().stream()
             .filter(s -> "pointUpsert".equals(s.op()))
             .findFirst().orElse(null);
@@ -495,10 +498,24 @@ public class WorkloadEngine {
                 // writer=-1: a system seed, not any virtual user's session write.
                 Map<String, Object> doc = verifier.buildWriteDoc(vstate, container, key, pkField, pkValue, -1, template);
                 long seq = VerifiedValue.seqOf(doc);
+                long beginNanos = vstate.relativeNanos();
                 return c.upsertItem(doc, new PartitionKey(pkValue), new CosmosItemRequestOptions())
-                    .doOnSuccess(r -> vstate.ackWrite(container, key, seq))
+                    .doOnSuccess(r -> {
+                        vstate.ackWrite(container, key, seq);
+                        // Record the seed write in the op history so the offline analyzer knows the seq
+                        // that established each key's initial value. Without this, a key that receives
+                        // only reads during the run has maxAllocatedSeq=0 in the downloaded history, and
+                        // its legitimate seed-value reads are mis-flagged as PHANTOM_READ.
+                        vstate.recordHistory(-1, "pointUpsert", container, key, beginNanos, vstate.relativeNanos(),
+                            OpHistoryRecord.OUTCOME_OK, seq, null, r.getStatusCode(), r.getRequestCharge());
+                    })
                     .onErrorResume(e -> {
                         vstate.failWrite(container, key, seq);
+                        // An errored seed may still have committed server-side (ambiguous outcome); record
+                        // its allocated seq (OUTCOME_ERROR) so a later legitimate read of that value isn't
+                        // flagged as a phantom — same reasoning as the workload write path.
+                        vstate.recordHistory(-1, "pointUpsert", container, key, beginNanos, vstate.relativeNanos(),
+                            OpHistoryRecord.OUTCOME_ERROR, seq, null, 0, 0.0);
                         return Mono.empty();
                     });
             }, PRESEED_CONCURRENCY)
