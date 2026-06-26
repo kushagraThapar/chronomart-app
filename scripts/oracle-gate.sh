@@ -59,8 +59,9 @@ rc=0
 if [ -n "${ANALYZER_JAR:-}" ]; then
   hist=$(mktemp)
   off=0; page=0
+  MAX_HISTORY_PAGES=200   # 200 × 5000 = 1 M records — well beyond any realistic workload run
   : > "$hist.parts"
-  while :; do
+  while [ "$page" -lt "$MAX_HISTORY_PAGES" ]; do
     chunk=$(curl -fsS "${hdr[@]}" "$BASE/workloads/$run_id/history?offset=$off&limit=5000")
     n=$(echo "$chunk" | python3 -c "import json,sys; print(len(json.load(sys.stdin)))")
     [ "$n" -gt 0 ] || break
@@ -68,6 +69,11 @@ if [ -n "${ANALYZER_JAR:-}" ]; then
     off=$(( off + n )); page=$(( page + 1 ))
     [ "$n" -lt 5000 ] && break
   done
+  if [ "$page" -ge "$MAX_HISTORY_PAGES" ]; then
+    echo "oracle-gate: FAIL — history exceeds $MAX_HISTORY_PAGES pages ($(( MAX_HISTORY_PAGES * 5000 )) records); aborting" >&2
+    rm -f "$hist" "$hist.parts"
+    exit 2
+  fi
   python3 -c "
 import json,sys
 out=[]
