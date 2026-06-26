@@ -41,6 +41,13 @@ java -cp <backend.jar> -Dloader.main=com.chronomart.oracle.OfflineHistoryAnalyze
 (non-zero exit) when ERROR anomalies exceed `THRESHOLD` (default 0); set `ANALYZER_JAR` to also
 download the history and run the offline analyzer as a second, independent check.
 
+This gate runs automatically in CI: the **`docker-compose smoke + oracle gate`** job in
+`.github/workflows/java-ci.yml` boots the full stack, then runs `oracle-gate.sh` against the
+live gateway with `ANALYZER_JAR` set (the backend fat jar is copied out of the `cm-java`
+container) — so a correctness regression caught by either the live oracle or the offline
+linearizability analyzer fails the build, on every PR and `main` push that touches the Java
+slice (and on demand via `workflow_dispatch`).
+
 
 ## Op coverage
 

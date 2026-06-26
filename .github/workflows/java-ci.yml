@@ -10,9 +10,13 @@ name: Java backend CI
 #   2. smoke      — boots the full docker-compose stack (vNext emulator,
 #                   otel-collector, prometheus, grafana, gateway,
 #                   java-backend), waits for java-backend `/actuator/health`
-#                   to report UP, then runs `scripts/dev/check.sh` to assert
-#                   every plumbing endpoint responds. Captures container
-#                   logs on failure so we can diagnose remotely.
+#                   to report UP, runs `scripts/dev/check.sh` to assert every
+#                   plumbing endpoint responds, then runs the workload-oracle
+#                   correctness gate (`scripts/oracle-gate.sh`, verify-register
+#                   preset) against the same live stack — failing the job on any
+#                   correctness anomaly, with the offline linearizability
+#                   analyzer as an independent second opinion. Captures
+#                   container logs on failure so we can diagnose remotely.
 #
 # Path filters keep CI focused: changes to .NET / Python / UI code don't
 # trigger this workflow, but anything that can break the Java slice
@@ -26,8 +30,10 @@ on:
       - 'gateway/**'
       - 'infra/docker/**'
       - 'infra/observability/**'
+      - 'infra/workloads/**'
       - 'scripts/dev/**'
       - 'scripts/seed/**'
+      - 'scripts/oracle-gate.sh'
       - '.github/workflows/java-ci.yml'
   push:
     branches: [main]
@@ -36,8 +42,10 @@ on:
       - 'gateway/**'
       - 'infra/docker/**'
       - 'infra/observability/**'
+      - 'infra/workloads/**'
       - 'scripts/dev/**'
       - 'scripts/seed/**'
+      - 'scripts/oracle-gate.sh'
       - '.github/workflows/java-ci.yml'
   # Allow ad-hoc manual runs from the Actions tab (useful for debugging CI
   # without pushing a commit that touches a path-filtered file).
@@ -83,16 +91,25 @@ jobs:
           retention-days: 7
 
   smoke:
-    name: docker-compose smoke
+    name: docker-compose smoke + oracle gate
     runs-on: ubuntu-latest
     # Cold-runner budget: ~5 min image pull (1.5 GB vNext emulator) +
     # ~3 min docker build + ~5.5 min emulator health convergence (start_period 30s
-    # + retries 60 × 5s) + ~3 min java-backend health poll + ~1 min check.sh ≈ 18 min.
-    # 25 min gives a comfortable buffer for GHA disk-IO variance without being open-ended.
-    timeout-minutes: 25
+    # + retries 60 × 5s) + ~3 min java-backend health poll + ~1 min check.sh +
+    # ~2 min oracle gate (20s verify-register run + poll + offline analyzer) ≈ 20 min.
+    # 28 min gives a comfortable buffer for GHA disk-IO variance without being open-ended.
+    timeout-minutes: 28
     needs: build
     steps:
       - uses: actions/checkout@v4
+
+      # JDK 21 for the offline linearizability analyzer the oracle gate runs as an
+      # independent second opinion (the backend fat jar targets Java 21).
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
 
       # The vNext emulator image is ~1.5GB — let it pull while the gateway and
       # java-backend images are built in parallel.
@@ -122,6 +139,19 @@ jobs:
 
       - name: Run check script
         run: bash scripts/dev/check.sh
+
+      # Correctness gate: run the verification oracle against the live gateway and
+      # FAIL the job on any ERROR-severity anomaly. Reuses the already-healthy stack
+      # from the smoke checks above — no second emulator boot. The gate's defaults
+      # already target this stack: BASE http://localhost:8000/api/v1 (gateway) with
+      # `X-Cosmos-SDK: java`, preset infra/workloads/verify-register.json, THRESHOLD 0.
+      # ANALYZER_JAR adds the offline linearizability analyzer as an independent
+      # second opinion, so a green gate means the live oracle AND the offline
+      # re-derivation both agree the op history is anomaly-free.
+      - name: Oracle correctness gate (verify-register)
+        run: |
+          docker cp cm-java:/app/app.jar oracle-analyzer.jar
+          ANALYZER_JAR="$PWD/oracle-analyzer.jar" bash scripts/oracle-gate.sh
 
       - name: Capture container logs on failure
         if: failure()
