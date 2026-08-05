@@ -117,16 +117,19 @@ paths:
     get:
       operationId: listSellers
       tags: [sellers]
-      summary: List sellers (paged, cross-partition)
+      summary: List sellers (bounded, cross-partition)
       parameters:
-        - $ref: '#/components/parameters/PageSize'
-        - $ref: '#/components/parameters/Continuation'
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, maximum: 1000, default: 100 }
       responses:
         "200":
           description: OK
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/SellerPage' }
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Seller' }
     post:
       operationId: createSeller
       tags: [sellers]
@@ -276,7 +279,7 @@ paths:
     get:
       operationId: getProductHpk
       tags: [products-hpk]
-      summary: Point-read product in hierarchical-PK container
+      summary: Point-read product in the two-level hierarchical-PK container
       responses:
         "200":
           description: OK
@@ -288,7 +291,7 @@ paths:
     put:
       operationId: upsertProductHpk
       tags: [products-hpk]
-      summary: Upsert product in hierarchical-PK container
+      summary: Upsert product in the two-level hierarchical-PK container
       requestBody:
         required: true
         content:
@@ -335,7 +338,7 @@ paths:
     get:
       operationId: getOrder
       tags: [orders]
-      summary: Point-read order (hierarchical PK)
+      summary: Point-read order (two-level hierarchical PK)
       responses:
         "200":
           description: OK
@@ -344,7 +347,7 @@ paths:
     put:
       operationId: upsertOrder
       tags: [orders]
-      summary: Upsert order (hierarchical PK)
+      summary: Upsert order (two-level hierarchical PK)
       requestBody:
         required: true
         content: { application/json: { schema: { $ref: '#/components/schemas/Order' } } }

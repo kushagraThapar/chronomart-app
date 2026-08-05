@@ -58,12 +58,16 @@ supported by the chosen SDK, the capability manifest returned from
 | Phase | Status | Notes |
 |------:|:------:|:------|
 | 0     | ✅     | Gateway, OpenAPI v1, seed data, docker-compose, observability stack |
-| 1     | 🚧     | Java backend bootstrap (PR2 ready), CRUD/queries/bulk/changeFeed/vector in subsequent PRs |
-| 2-6   | ⏳     | .NET, Python, workloads framework, Rust+Go, AKS migration |
+| 1     | ✅     | Java backend, marketplace APIs, diagnostics, vector search, telemetry, smoke CI |
+| 2     | ✅     | .NET 9 backend on Microsoft.Azure.Cosmos 3.62.0 + Java/.NET contract CI |
+| 3     | ⏳     | Python backend parity |
+| 4     | 🚧     | Java workload runner, cache inspector, and correctness oracle landed; cross-SDK runners remain |
+| 5-6   | ⏳     | Rust + Go backends, then AKS migration |
 
-The Java backend currently exposes `/healthz`, `/api/v1/_meta/capabilities`,
-`/api/v1/sellers`, `/api/v1/sellers/{id}` and idempotently provisions all containers
-(including repairing Cart's default TTL that cosmoshell seed scripts can't set).
+The Java and .NET backends implement the shared marketplace and SDK feature contract.
+The .NET backend intentionally reports workloads and Change Feed Processor as unsupported;
+pull change feed is implemented. Both backends idempotently provision the database and
+containers, including repairing Cart's default TTL.
 
 ## Authoritative design doc
 

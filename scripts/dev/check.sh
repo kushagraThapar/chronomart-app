@@ -12,8 +12,8 @@
 # non-existent backend will time out. We probe them best-effort and only fail
 # the script if a backend is *expected* to be live but isn't responding.
 #
-# Override the implemented-SDK list with IMPLEMENTED_SDKS="java dotnet" etc.
-# as more backends come online.
+# Override the implemented-SDK list for partial stacks, for example
+# IMPLEMENTED_SDKS=java when only the Java backend was started.
 
 set -uo pipefail
 
@@ -35,9 +35,8 @@ check() {
   fi
 }
 
-# SDKs whose backends are deployed in the current compose stack. Phase 1 ships
-# Java only; the others are tracked as stubs at the gateway. Override via env.
-IMPLEMENTED_SDKS=${IMPLEMENTED_SDKS:-"java"}
+# SDKs whose backends are deployed by the full compose stack.
+IMPLEMENTED_SDKS=${IMPLEMENTED_SDKS:-"java dotnet"}
 ALL_SDKS=${ALL_SDKS:-"java dotnet python rust go"}
 
 bold "ChronoMart stack health"

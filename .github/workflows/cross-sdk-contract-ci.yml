@@ -1,0 +1,116 @@
+name: Cross-SDK contract CI
+
+on:
+  pull_request:
+    paths:
+      - 'backends/java/**'
+      - 'backends/dotnet/**'
+      - 'contracts/**'
+      - 'gateway/**'
+      - 'infra/docker/**'
+      - 'scripts/dev/**'
+      - 'scripts/seed/**'
+      - '.github/workflows/cross-sdk-contract-ci.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'backends/java/**'
+      - 'backends/dotnet/**'
+      - 'contracts/**'
+      - 'gateway/**'
+      - 'infra/docker/**'
+      - 'scripts/dev/**'
+      - 'scripts/seed/**'
+      - '.github/workflows/cross-sdk-contract-ci.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cross-sdk-contract-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  dotnet:
+    name: .NET build + unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.0.x'
+          cache: true
+          cache-dependency-path: backends/dotnet/**/packages.lock.json
+      - name: Restore
+        run: dotnet restore backends/dotnet/ChronoMart.sln --locked-mode
+      - name: Build
+        run: dotnet build backends/dotnet/ChronoMart.sln --configuration Release --no-restore
+      - name: Test
+        run: dotnet test backends/dotnet/ChronoMart.sln --configuration Release --no-build
+
+  contract:
+    name: Java + .NET live contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: dotnet
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Build and start Java + .NET stack
+        run: |
+          docker compose -f infra/docker/docker-compose.yml up -d --build \
+            cosmos-emulator gateway java-backend dotnet-backend
+
+      - name: Wait for both backends
+        run: |
+          set -euo pipefail
+          for sdk_port in java:8101 dotnet:8102; do
+            sdk=${sdk_port%%:*}
+            port=${sdk_port##*:}
+            ready=0
+            for i in $(seq 1 80); do
+              if curl -fsS "http://localhost:${port}/healthz" >/dev/null 2>&1; then
+                echo "${sdk} backend ready after ${i} attempts"
+                ready=1
+                break
+              fi
+              sleep 3
+            done
+            if [ "$ready" -ne 1 ]; then
+              echo "::error::${sdk} backend did not become ready"
+              exit 1
+            fi
+          done
+
+      - name: Run shared contract suite
+        env:
+          CHRONOMART_BASE_URL: http://localhost:8000/api/v1
+          CHRONOMART_SDKS: java,dotnet
+        run: npm test --prefix contracts/tests
+
+      - name: Capture container logs on failure
+        if: failure()
+        run: |
+          mkdir -p logs-capture
+          for svc in cosmos-emulator gateway java-backend dotnet-backend; do
+            docker compose -f infra/docker/docker-compose.yml logs --no-color "$svc" \
+              > "logs-capture/${svc}.log" 2>&1 || true
+          done
+
+      - name: Upload container logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cross-sdk-container-logs
+          path: logs-capture
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Tear down stack
+        if: always()
+        run: docker compose -f infra/docker/docker-compose.yml down -v

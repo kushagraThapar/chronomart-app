@@ -138,7 +138,7 @@ jobs:
           exit 1
 
       - name: Run check script
-        run: bash scripts/dev/check.sh
+        run: IMPLEMENTED_SDKS=java bash scripts/dev/check.sh
 
       # Correctness gate: run the verification oracle against the live gateway and
       # FAIL the job on any ERROR-severity anomaly. Reuses the already-healthy stack
