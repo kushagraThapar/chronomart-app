@@ -70,13 +70,16 @@ public static class PartitionKeys
                     builder.Add(level.GetBoolean());
                     break;
                 case JsonValueKind.Number:
-                    if (level.TryGetInt64(out long integer)
-                        && (integer == long.MinValue || Math.Abs(integer) > (1L << 53)))
+                    double number = level.GetDouble();
+                    bool exceedsSafeRange = level.TryGetInt64(out long integer)
+                        ? integer == long.MinValue || Math.Abs(integer) > (1L << 53)
+                        : Math.Abs(number) > (double)(1L << 53);
+                    if (exceedsSafeRange)
                     {
                         throw ContractValidation.BadRequest(
-                            $"partitionKey numeric level {integer} exceeds the safe double range (±2^53); send it as a string.");
+                            $"partitionKey numeric level {level.GetRawText()} exceeds the safe double range (±2^53); send it as a string.");
                     }
-                    builder.Add(level.GetDouble());
+                    builder.Add(number);
                     break;
                 default:
                     throw ContractValidation.BadRequest(

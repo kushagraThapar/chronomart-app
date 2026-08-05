@@ -59,6 +59,17 @@ public sealed class ValidationTests
     }
 
     [Fact]
+    public void Oversized_double_hpk_level_beyond_int64_is_rejected()
+    {
+        using JsonDocument json = JsonDocument.Parse("""["seller",100000000000000000000]""");
+
+        ApiException exception = Assert.Throws<ApiException>(
+            () => PartitionKeys.Parse(json.RootElement, required: true));
+
+        Assert.Contains("safe double range", exception.Message);
+    }
+
+    [Fact]
     public void Hpk_schema_matches_java_and_vnext_emulator()
     {
         Assert.Equal(["/sellerId", "/categoryId"], PartitionKeys.ProductHpkPaths);
