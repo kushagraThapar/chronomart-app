@@ -111,7 +111,7 @@ services:
       cosmos-emulator:
         condition: service_healthy
 
-  # ─── Phase-1 backends ───────────────────────────────────────────────────────
+  # ─── SDK backends ───────────────────────────────────────────────────────────
 
   java-backend:
     build:
@@ -146,9 +146,25 @@ services:
     depends_on:
       cosmos-emulator: { condition: service_healthy }
 
-  # dotnet-backend:
-  #   ... (Phase 2)
-  #
+  dotnet-backend:
+    build:
+      context: ../../backends/dotnet
+    container_name: cm-dotnet
+    environment:
+      ASPNETCORE_URLS: "http://+:8102"
+      COSMOS_ENDPOINT: "https://cosmos-emulator:8081/"
+      COSMOS_KEY:      "C2y6yDjf5/R+ob0N8A7Cgv30VRDJIWEHLM+4QDU5DE2nQ9nDuVTqobD4b8mGGyPMbIZnqyMsEcaGQy67XIw/Jw=="
+      COSMOS_AUTH_MODE: "key"
+      COSMOS_DATABASE: "ChronoMart"
+      COSMOS_ALLOW_INVALID_CERTS: "true"
+      COSMOS_EMULATOR_HOST: "cosmos-emulator"
+      CHRONOMART_CONTAINER_INIT_ENABLED: "true"
+      CHRONOMART_CONTAINER_INIT_VECTOR: "true"
+    ports: ["8102:8102"]
+    networks: [chronomart]
+    depends_on:
+      cosmos-emulator: { condition: service_healthy }
+
   # python-backend:
   #   ... (Phase 3)
 

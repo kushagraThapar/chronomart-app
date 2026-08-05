@@ -13,11 +13,11 @@ Single database: **`ChronoMart`**.
 |-------------------|--------------------------------|-------------|--------|---------------------------------------------|
 | `Sellers`         | `/id`                          | autoscale 1k| —      | Small set; one doc per seller               |
 | `Products`        | `/sellerId`                    | autoscale 4k| —      | Hot read by seller                          |
-| `ProductsHpk`     | `/sellerId, /categoryId, /id`  | autoscale 4k| —      | Hierarchical PK, `/id` leaf for routed point reads |
+| `ProductsHpk`     | `/sellerId, /categoryId`       | autoscale 4k| —      | Emulator-compatible HPK; `/id` remains the document id |
 | `Inventory`       | `/sellerId`                    | autoscale 1k| —      | Co-located with `Products`                  |
-| `ProductVectors`  | `/sellerId`                    | autoscale 1k| —      | DiskANN vector index on `/embedding`        |
+| `ProductVectors`  | `/productId`                   | autoscale 1k| —      | DiskANN vector index on `/embedding`; emulator-compatible layout |
 | `Customers`       | `/id`                          | autoscale 1k| —      | One doc per customer                        |
-| `Orders`          | `/customerId, /yearMonth, /id` | autoscale 4k| —      | Hierarchical PK, time-bucketed, `/id` leaf  |
+| `Orders`          | `/customerId, /yearMonth`      | autoscale 4k| —      | Emulator-compatible HPK, time-bucketed      |
 | `Reviews`         | `/productId`                   | autoscale 1k| —      | Reviews co-located by product               |
 | `Cart`            | `/customerId`                  | autoscale 1k| 604800 | TTL = 7 days; abandoned carts auto-purge    |
 | `ChangeFeedLease` | `/id`                          | autoscale 1k| —      | Lease container for Java/.NET change feed   |
@@ -172,16 +172,22 @@ Container vector embedding policy (set at create time):
 
 ## Partition key choices — why
 
-- **`/sellerId` on Products / ProductVectors / Inventory** co-locates a seller's catalog and
-  stock — typical "merchant dashboard" reads stay single-partition.
+- **`/sellerId` on Products / Inventory** co-locates a seller's catalog and stock — typical
+  "merchant dashboard" reads stay single-partition. `ProductVectors` currently uses
+  `/productId` to match the container shape accepted by the vNext emulator and shared by the
+  Java and .NET backends; changing it to `/sellerId` requires recreating the container.
 - **`/customerId` on Orders / Cart / Reviews-by-customer-id queries** is the obvious access
   path for a logged-in customer; reviews are partitioned by `/productId` instead because the
   most common access pattern is "show reviews for this product".
-- **Hierarchical `/customerId, /yearMonth, /id` on Orders** showcases time-bucketed hierarchical
+- **Hierarchical `/customerId, /yearMonth` on Orders** showcases time-bucketed hierarchical
   PKs and lets us test partial-PK queries ("all of this customer's orders this month" vs
   "all of this customer's orders ever").
-- **Hierarchical `/sellerId, /categoryId, /id` on ProductsHpk** mirrors a catalog browse pattern;
-  the `/id` leaf keeps full-tuple point reads single-partition while prefix scans on
-  `/sellerId` (and `/sellerId + /categoryId`) still get hierarchical prefix routing.
+- **Hierarchical `/sellerId, /categoryId` on ProductsHpk** mirrors a catalog browse pattern;
+  prefix scans on `/sellerId` and full-tuple point reads exercise hierarchical routing.
   It's a separate container from `Products` so we can run the same query against both
   layouts and compare RU/latency.
+
+The target real-account layout adds `/id` as a third HPK level for both containers. The
+vNext emulator currently creates the two-level shape reliably across cosmoshell, Java, and
+.NET, while three-level SDK creation is inconsistent. Because partition-key definitions are
+immutable, moving to the target layout requires dropping and recreating these containers.
