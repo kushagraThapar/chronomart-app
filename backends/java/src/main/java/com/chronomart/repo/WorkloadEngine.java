@@ -30,6 +30,7 @@ import org.springframework.stereotype.Component;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
+import reactor.util.retry.Retry;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -131,6 +132,13 @@ public class WorkloadEngine {
     /** vectorSearch top-K range — mirrors {@code VectorSearchRequest}. */
     private static final int VECTOR_MIN_K = 1;
     private static final int VECTOR_MAX_K = 100;
+
+    // A concurrent cartUpsert of the same not-yet-existent id races as two inserts; the loser gets a
+    // transient 409 "ID collision on Create" that the SDK does not retry. Once the winner commits, the
+    // doc exists, so re-running the upsert lands as a conflict-free replace. Scoped to cartUpsert —
+    // verification pointUpserts pre-seed their keyspace, so they never hit the first-insert race.
+    private static final int CART_UPSERT_CONFLICT_MAX_RETRIES = 3;
+    private static final Duration CART_UPSERT_CONFLICT_RETRY_DELAY = Duration.ofMillis(25);
 
     /** Time-series snapshot interval. 1s matches the chart resolution in the UI. */
     private static final Duration SNAPSHOT_INTERVAL = Duration.ofSeconds(1);
@@ -699,7 +707,8 @@ public class WorkloadEngine {
                 200));
     }
 
-    private Mono<OpResult> executeCartUpsert(WorkloadStep step) {
+    // Package-private so WorkloadEngineCartUpsertRetryTest can exercise the 409-conflict retry.
+    Mono<OpResult> executeCartUpsert(WorkloadStep step) {
         // customerIds validated as List<?> in validateStepParams; toString() guards
         // against non-string JSON scalars (e.g. integer IDs) to avoid ClassCastException.
         @SuppressWarnings("unchecked")
@@ -708,7 +717,21 @@ public class WorkloadEngine {
         Map<String, Object> doc = synthesizeCart(customerId);
         CosmosAsyncContainer container = database.getContainer(step.container());
         return container.upsertItem(doc, new PartitionKey(customerId), new CosmosItemRequestOptions())
-            .map(resp -> new OpResult(resp.getRequestCharge(), resp.getStatusCode()));
+            .map(resp -> new OpResult(resp.getRequestCharge(), resp.getStatusCode()))
+            // Concurrent upserts of the same brand-new id race as inserts; the loser gets a transient
+            // 409 "ID collision on Create" (which the SDK does not retry). Once the winner commits, the
+            // doc exists, so a bounded retry re-runs the upsert as a replace and succeeds. Only 409 is
+            // retried; any other error — and a 409 that outlives the retries — still surfaces to the
+            // op-error counter, so the harness stays honest about genuine failures.
+            .retryWhen(Retry.fixedDelay(CART_UPSERT_CONFLICT_MAX_RETRIES, CART_UPSERT_CONFLICT_RETRY_DELAY)
+                .filter(WorkloadEngine::isCreateConflict)
+                .onRetryExhaustedThrow((spec, signal) -> signal.failure()));
+    }
+
+    /** True for a transient 409 Conflict ("ID collision on Create") — the only cart-upsert failure
+     *  worth retrying, because the racing winner's write makes the retry a conflict-free replace. */
+    private static boolean isCreateConflict(Throwable e) {
+        return e instanceof CosmosException ce && ce.getStatusCode() == 409;
     }
 
     private static Map<String, Object> synthesizeCart(String customerId) {
@@ -1034,7 +1057,8 @@ public class WorkloadEngine {
         return s.op() + ":" + s.container();
     }
 
-    private record OpResult(double requestCharge, int statusCode) {}
+    // Package-private so same-package engine tests can assert on op results.
+    record OpResult(double requestCharge, int statusCode) {}
 
     /**
      * Mutable in-memory state for one in-flight or completed run. Lives in
